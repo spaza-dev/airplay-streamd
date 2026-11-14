@@ -1,0 +1,84 @@
+server:
+  listen: "127.0.0.1:8787"
+  socket: "/run/streamd.sock"
+
+recording:
+  chunk_seconds: 300
+  output_dir: "/var/lib/streamd/chunks"
+
+  ffmpeg_path: "/usr/bin/ffmpeg"
+  yt_dlp_path: "/usr/local/bin/yt-dlp"
+
+  reconnect_delay_seconds: 10
+  max_reconnect_delay_seconds: 300
+
+  audio:
+    codec: "libopus"
+    container: "ogg"
+    bitrate: "96k"
+    sample_rate: 48000
+    channels: 2
+    vbr: true
+
+  video:
+    enabled: false
+
+uploader:
+  enabled: true
+
+  queue_db: "/var/lib/streamd/state/uploads.db"
+
+  concurrency: 4
+
+  retry:
+    initial_interval_seconds: 30
+    max_interval_seconds: 3600
+    max_attempts: 0
+
+  cleanup_after_upload: true
+
+storage:
+  endpoint: "${S3_ENDPOINT}"
+  region: "${S3_REGION}"
+  bucket: "${S3_BUCKET}"
+
+  access_key_id: "${S3_ACCESS_KEY_ID}"
+  secret_access_key: "${S3_SECRET_ACCESS_KEY}"
+
+  force_path_style: false
+
+logging:
+  level: "info"
+  file: "/var/log/streamd/streamd.log"
+
+streams:
+  - id: "capital-fm-ke"
+    name: "Capital FM Kenya"
+    type: "radio"
+    url: "https://example.com/stream"
+    enabled: false
+
+    chunk_seconds: 300
+
+    audio:
+      codec: "libopus"
+      container: "ogg"
+      bitrate: "96k"
+
+    metadata:
+      country: "Kenya"
+      city: "Nairobi"
+      language: "English"
+      frequency: "98.4 FM"
+      operator: "Example Media"
+
+  - id: "youtube-channel"
+    name: "Example YouTube Channel"
+    type: "youtube"
+    url: "https://www.youtube.com/@example"
+    enabled: false
+
+    metadata:
+      country: "Kenya"
+      platform: "YouTube"
+      channel: "Example Channel"
