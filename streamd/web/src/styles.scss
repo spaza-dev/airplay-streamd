@@ -300,8 +300,23 @@ body {
   padding-top: 12px;
 }
 
+.bolt-panel-content.streamd-panel-content {
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.streamd-panel-tabs {
+  padding: 0 12px;
+  background: $panel;
+  border-bottom: 1px solid $border;
+  z-index: 1;
+}
+
 .streamd-panel-body {
   padding: 18px 20px;
+  width: 100%;
+  min-width: 0;
 }
 
 .streamd-definition {
@@ -411,6 +426,8 @@ body {
 
 .streamd-form {
   padding: 18px 20px;
+  width: 100%;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 16px;

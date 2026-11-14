@@ -14,6 +14,8 @@ const STREAM_TYPES = ["radio", "tv", "hls", "direct", "youtube", "twitch", "web"
 const LOG_LEVELS = ["debug", "info", "warn", "error"];
 const PAGE_SIZE = 10;
 
+type PanelMode = "closed" | "detail" | "add" | "edit";
+
 interface StreamForm {
   id: string;
   name: string;
@@ -147,7 +149,7 @@ export function App() {
   const [logLevel, setLogLevel] = React.useState("");
   const [logStream, setLogStream] = React.useState("");
 
-  const [panelMode, setPanelMode] = React.useState<"closed" | "add" | "edit">("closed");
+  const [panelMode, setPanelMode] = React.useState<PanelMode>("closed");
   const [form, setForm] = React.useState<StreamForm>(emptyForm());
 
   const refresh = React.useCallback(async () => {
@@ -185,7 +187,7 @@ export function App() {
   );
 
   React.useEffect(() => {
-    if (!selected || detailTab !== "logs") {
+    if (panelMode !== "detail" || !selected || detailTab !== "logs") {
       return;
     }
     let active = true;
@@ -203,7 +205,7 @@ export function App() {
       active = false;
       window.clearInterval(timer);
     };
-  }, [selected ? selected.id : null, detailTab]);
+  }, [panelMode, selectedId, detailTab]);
 
   React.useEffect(() => {
     if (tab !== "logs") {
@@ -267,6 +269,13 @@ export function App() {
     }
   };
 
+  const openDetail = (stream: StreamView) => {
+    setSelectedId(stream.id);
+    setDetailTab("overview");
+    setDetailLogs([]);
+    setPanelMode("detail");
+  };
+
   const openAdd = () => {
     setSelectedId(null);
     setForm(emptyForm());
@@ -281,6 +290,7 @@ export function App() {
 
   const closePanel = () => {
     setPanelMode("closed");
+    setSelectedId(null);
   };
 
   const saveStream = async () => {
@@ -316,6 +326,7 @@ export function App() {
         setNotice(`Stream ${payload.id} added`);
       }
       setPanelMode("closed");
+      setSelectedId(null);
       await refresh();
     } catch (e) {
       setError((e as Error).message);
@@ -430,7 +441,7 @@ export function App() {
                   {pageRows.map((stream) => {
                     const state = streamState(stream);
                     return (
-                      <tr key={stream.id} onClick={() => setSelectedId(stream.id)}>
+                      <tr key={stream.id} onClick={() => openDetail(stream)}>
                         <td>
                           <div className="streamd-name">{stream.name}</div>
                           <div className="streamd-muted streamd-small">{stream.url}</div>
@@ -485,7 +496,7 @@ export function App() {
                               disabled={busy}
                               onClick={() => {
                                 if (window.confirm(`Remove stream ${stream.id}? Recordings and queued uploads are kept.`)) {
-                                  if (selectedId === stream.id) setSelectedId(null);
+                                  if (selectedId === stream.id) closePanel();
                                   runAction(() => api.remove(stream.id), `Removed ${stream.id}`);
                                 }
                               }}
@@ -562,13 +573,14 @@ export function App() {
           </div>
         )}
 
-        {selected ? (
+        {panelMode === "detail" && selected ? (
           <Panel
-            onDismiss={() => setSelectedId(null)}
+            onDismiss={closePanel}
+            contentClassName="streamd-panel-content"
             titleProps={{ text: selected.name }}
             description={selected.id}
             footerButtonProps={[
-              { text: "Close", onClick: () => setSelectedId(null) },
+              { text: "Close", onClick: closePanel },
               selected.running
                 ? {
                     text: "Stop",
@@ -582,6 +594,7 @@ export function App() {
             ]}
           >
             <TabBar
+              className="streamd-panel-tabs"
               selectedTabId={detailTab}
               onSelectedTabChanged={setDetailTab}
               tabSize={TabSize.Compact}
@@ -656,9 +669,10 @@ export function App() {
           </Panel>
         ) : null}
 
-        {panelMode !== "closed" ? (
+        {panelMode === "add" || panelMode === "edit" ? (
           <Panel
             onDismiss={closePanel}
+            contentClassName="streamd-panel-content"
             titleProps={{ text: panelMode === "edit" ? "Edit stream" : "Add stream" }}
             description={panelMode === "edit" ? form.id : "Register a new capture source"}
             footerButtonProps={[
