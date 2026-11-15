@@ -105,7 +105,7 @@ install_packages() {
 }
 
 install_go() {
-  local required version archive checksum install_dir tmpdir
+  local required version archive checksum go_json install_dir tmpdir
   required="$(awk '/^go [0-9]/{print $2; exit}' "$ROOT/go.mod")"
 
   if command -v go >/dev/null 2>&1; then
@@ -131,7 +131,8 @@ install_go() {
   version="$required"
   archive="go${version}.linux-${GO_ARCH}.tar.gz"
   echo "==> Installing Go $version"
-  checksum="$(curl -fsSL https://go.dev/dl/?mode=json | awk -v f="$archive" '
+  go_json="$(curl -fsSL --retry 3 https://go.dev/dl/?mode=json)"
+  checksum="$(printf '%s\n' "$go_json" | awk -v f="$archive" '
     index($0, "\"filename\": \"" f "\"") { found=1; next }
     found && /"sha256"/ {
       sub(/.*"sha256": "/, "")
@@ -146,7 +147,7 @@ install_go() {
   fi
 
   tmpdir="$(mktemp -d)"
-  curl -fsSL "https://go.dev/dl/$archive" -o "$tmpdir/$archive"
+  curl -fsSL --retry 3 "https://go.dev/dl/$archive" -o "$tmpdir/$archive"
   printf '%s  %s\n' "$checksum" "$tmpdir/$archive" | sha256sum -c - >/dev/null
   tar -C "$tmpdir" -xzf "$tmpdir/$archive"
   install_dir="/usr/local/lib/go-${version}"
@@ -160,7 +161,7 @@ install_go() {
 }
 
 install_node() {
-  local line version archive checksum base install_dir tmpdir node_version
+  local line version archive checksum base install_dir tmpdir node_version sums
   if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
     node_version="$(node -p 'process.versions.node')"
     if ! version_ge "$node_version" "20.19.0"; then
@@ -172,7 +173,8 @@ install_node() {
   fi
 
   base="https://nodejs.org/dist/latest-v24.x"
-  line="$(curl -fsSL "$base/SHASUMS256.txt" | awk -v p="linux-${NODE_ARCH}.tar.xz$" '$2 ~ p {print; exit}')"
+  sums="$(curl -fsSL --retry 3 "$base/SHASUMS256.txt")"
+  line="$(printf '%s\n' "$sums" | awk -v p="linux-${NODE_ARCH}.tar.xz$" '$2 ~ p {print; exit}')"
   if [[ -z "$line" ]]; then
     echo "could not locate the Node.js archive" >&2
     exit 1
@@ -184,7 +186,7 @@ install_node() {
 
   echo "==> Installing Node.js $version"
   tmpdir="$(mktemp -d)"
-  curl -fsSL "$base/$archive" -o "$tmpdir/$archive"
+  curl -fsSL --retry 3 "$base/$archive" -o "$tmpdir/$archive"
   printf '%s  %s\n' "$checksum" "$tmpdir/$archive" | sha256sum -c - >/dev/null
   install_dir="/usr/local/lib/node-v${version}-linux-${NODE_ARCH}"
   rm -rf "$install_dir"
@@ -223,7 +225,7 @@ install_olaf() {
   version="${OLAF_VERSION#v}"
   archive="olaf_cli-linux-${OLAF_ARCH}.tar.gz"
   echo "==> Installing Olaf v$version"
-  release_json="$(curl -fsSL "https://api.github.com/repos/JorenSix/Olaf/releases/tags/v${version}")"
+  release_json="$(curl -fsSL --retry 3 "https://api.github.com/repos/JorenSix/Olaf/releases/tags/v${version}")"
   info="$(printf '%s\n' "$release_json" | awk -v n="$archive" '
     index($0, "\"name\": \"" n "\"") { found=1 }
     found && /"digest": "sha256:/ {
@@ -249,7 +251,7 @@ install_olaf() {
   fi
 
   tmpdir="$(mktemp -d)"
-  curl -fsSL "$url" -o "$tmpdir/$archive"
+  curl -fsSL --retry 3 "$url" -o "$tmpdir/$archive"
   printf '%s  %s\n' "$checksum" "$tmpdir/$archive" | sha256sum -c - >/dev/null
   tar -C "$tmpdir" -xzf "$tmpdir/$archive"
   if [[ ! -x "$tmpdir/olaf" ]]; then
