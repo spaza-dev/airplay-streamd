@@ -1,1614 +1,1739 @@
-# Spaza OLAF Indexer
-## MVP Development Specification
+# Olaf Daily Indexer
+## Technical Design and Implementation Specification
 
-**Version:** 1.0  
-**Status:** Development baseline  
+**Project:** Spaza Airplay – Olaf Daily Indexer  
+**Purpose:** Implementation guide for coding agents  
 **Backend:** Go  
-**Frontend:** React + TypeScript  
-**UI framework:** Azure DevOps UI (`azure-devops-ui`)  
 **Database:** SQLite  
-**Indexing engine:** OLAF  
-**Storage:** S3-compatible object storage
+**Fingerprinting:** Olaf CLI  
+**Index format:** LMDB  
+**Storage:** S3-compatible object storage  
+**Frontend:** React + TypeScript + `azure-devops-ui`
 
 ---
 
-# 1. Project overview
+# 1. Project Overview
 
-Spaza OLAF Indexer is a standalone indexing service that reads recorded audio chunks from S3-compatible object storage, processes them using OLAF, produces self-contained LMDB indexes, and uploads the completed indexes to a separate destination bucket.
+Build a lightweight service that creates daily Olaf fingerprint indexes from timestamped recordings stored in S3-compatible object storage.
 
-The service must support:
+The application must:
 
-- Multiple recording streams.
-- Multiple recording chunks per indexing job.
-- Daily stream indexing.
-- Individual asset/session indexing.
-- Concurrent indexing jobs.
-- Persistent job queuing and recovery.
-- Independent source and destination storage configurations.
-- A web-based operations interface.
-- Index validation, archiving and publication.
-- Job progress, logs, retries and operational monitoring.
+1. Discover recordings belonging to a stream and date.
+2. Create one indexing job per stream/date.
+3. Build a chronological stream timeline from the recording chunks.
+4. Download and validate the recordings.
+5. Generate Olaf fingerprints.
+6. Store the fingerprints in one daily LMDB database.
+7. Preserve the mapping between recording timestamps, logical timeline positions, and Olaf reference offsets.
+8. Upload the completed daily index and its metadata.
+9. Maintain job history, logs, statistics, and operational status.
+10. Support manual, API, recorder-triggered, and automatically discovered jobs.
+11. Allow automatic discovery to be configured through the web interface.
 
-The platform is an indexing and archival service. It is not responsible for recording audio, managing broadcast sources, matching fingerprints against catalogs, or administering royalties.
+The application is a purpose-built indexing service, not a general workflow platform.
 
-## 1.1 Core processing flow
+## 1.1 Core principles
 
-```text
-                 SOURCE STORAGE
-                spaza-recordings
-                       |
-                       v
-                Read stream metadata
-                   meta.json
-                       |
-                       v
-               Discover recording chunks
-                       |
-                       v
-                 Create indexing job
-                       |
-                       v
-                 SQLite job queue
-                       |
-                       v
-                Go worker scheduler
-                       |
-                       v
-                Download audio chunks
-                       |
-                       v
-                Prepare logical audio
-                       |
-                       v
-                  OLAF indexing
-                       |
-                       v
-                  LMDB database
-                       |
-                       v
-                Validate LMDB output
-                       |
-                       v
-                 Archive index
-                  index.tar.zst
-                       |
-                       v
-                Upload to destination
-                  S3-compatible
-                       |
-                       v
-               Publish manifest.json
-                       |
-                       v
-                  INDEX COMPLETE
-```
+- One job represents one stream and one calendar date.
+- One daily job produces one daily LMDB index.
+- All recording chunks for that date belong to one logical chronological stream.
+- The stream timeline is authoritative for reconstructing broadcast timestamps.
+- Missing intervals must be represented explicitly.
+- Do not silently concatenate non-adjacent recordings.
+- Use one isolated Olaf workspace per daily job.
+- Use SQLite for durable job management.
+- Use bounded worker concurrency.
+- Never modify or delete source recordings.
+- Support independent source and destination storage configurations.
+- Publish indexes only after successful validation.
 
-Each job must have an isolated working directory, OLAF configuration, cache directory and LMDB database.
+## 1.2 Out of scope
 
-# 2. Technology and implementation principles
+The application does not:
 
-## 2.1 Backend
+- Record live streams.
+- Manage BMAS nodes.
+- Maintain music catalogs.
+- Execute recognition queries against completed indexes.
+- Manage royalty or usage reporting.
+- Delete source recordings.
+- Provide the downstream query service.
 
-Use Go.
+Its responsibility ends when a complete, validated daily index is published.
 
-Recommended dependencies:
+---
 
-| Purpose | Technology |
+# 2. Technology Stack
+
+| Component | Technology |
 |---|---|
-| HTTP server and API | Go `net/http` |
-| S3 storage | AWS SDK for Go v2 |
+| Backend | Go |
+| HTTP server | Go standard library or lightweight router |
 | Database | SQLite |
-| SQLite driver | `modernc.org/sqlite` |
-| Configuration | YAML |
-| Logging | `log/slog` |
-| Audio preparation | FFmpeg / ffprobe |
-| Compression | Zstandard |
-| Process execution | Go `os/exec` |
+| Fingerprinting | Olaf CLI |
+| Index storage | LMDB |
+| Object storage | S3-compatible API |
+| Frontend | React + TypeScript |
+| UI components | `azure-devops-ui` |
+| API documentation | OpenAPI 3.x + Swagger UI |
+| Deployment | Linux systemd service |
 
-Keep the backend as one executable.
+Keep dependencies and source files to a minimum.
 
-The HTTP server, scheduler, workers, queue and storage integrations run within the same process.
+Do not introduce Kubernetes, Redis, Kafka, RabbitMQ, or a separate microservice architecture.
 
-Do not introduce microservices, message brokers, Redis, Kubernetes or a separate database server for the MVP.
+---
 
-## 2.2 Frontend
+# 3. Architecture
 
-Use:
-
-- React
-- TypeScript
-- Vite
-- `azure-devops-ui`
-- Azure DevOps component styling and design patterns.
-
-The frontend is built separately and its compiled static assets are served by the Go application.
-
-The UI must use the Azure DevOps UI library as its actual component system, not merely imitate the visual appearance with generic HTML elements.
-
-## 2.3 Implementation principles
-
-1. Keep the implementation straightforward.
-2. Minimize the number of source files.
-3. Avoid unnecessary abstractions and design patterns.
-4. Use SQLite as the only persistent application database.
-5. Use S3-compatible storage for input recordings and published indexes.
-6. Use OLAF for fingerprint extraction and LMDB management.
-7. Do not implement fingerprinting algorithms in Go.
-8. Never expose storage credentials to the frontend.
-9. Never let the frontend communicate directly with S3 or OLAF.
-10. Make jobs recoverable after application restarts.
-
-# 3. Storage architecture
-
-Storage configuration is an important part of this application.
-
-The source and destination are two independent storage connections.
-
-They may use:
-
-- The same provider and credentials.
-- The same provider but different credentials.
-- Different providers.
-- Different endpoints.
-- Different buckets.
-- Different regions.
-
-The implementation must not assume that source and destination share credentials, endpoints or even the same S3 provider.
-
-## 3.1 Independent storage configuration
-
-Use separate `source` and `destination` configuration sections.
-
-Example:
-
-```yaml
-storage:
-  source:
-    endpoint: "https://source-storage.example.com"
-    region: "auto"
-    bucket: "spaza-recordings"
-    access_key_id_env: "SOURCE_S3_ACCESS_KEY"
-    secret_access_key_env: "SOURCE_S3_SECRET_KEY"
-    session_token_env: ""
-    force_path_style: true
-    use_tls: true
-
-  destination:
-    endpoint: "https://destination-storage.example.com"
-    region: "auto"
-    bucket: "spaza-indexes"
-    access_key_id_env: "DESTINATION_S3_ACCESS_KEY"
-    secret_access_key_env: "DESTINATION_S3_SECRET_KEY"
-    session_token_env: ""
-    force_path_style: true
-    use_tls: true
-```
-
-These are independent connection configurations.
-
-The environment variable names are references, not credential values. Actual credentials must be supplied through environment variables or a protected secrets mechanism.
-
-If both connections use the same credentials, the operator can point both references to the same environment variables.
-
-If they use different credentials, the operator supplies separate values.
-
-The application must initialize two independent S3 clients:
-
-- `SourceClient`
-- `DestinationClient`
-
-Do not reuse one client and mutate its credentials or endpoint between operations.
-
-## 3.2 Storage connection capabilities
-
-The source connection requires:
-
-- List objects.
-- Get objects.
-- Read object metadata.
-- Read object size and modification information.
-
-The destination connection requires:
-
-- Put objects.
-- Get objects for verification.
-- Head objects.
-- List objects where necessary.
-- Multipart upload support for large archives.
-
-The application should validate each connection independently at startup and provide a connection-test action in Settings.
-
-A source connection test should verify access to the configured source bucket.
-
-A destination connection test should verify that the configured destination bucket is accessible and writable.
-
-Do not require destination write permissions on the source connection.
-
-Do not require source read permissions on the destination connection.
-
-## 3.3 Source recordings structure
-
-The source bucket follows this structure:
+The application is a single deployable service.
 
 ```text
-s3://spaza-recordings/
-│
-├── capital-fm-ke/
-│   ├── meta.json
-│   └── recordings/
-│       └── 2026/
-│           └── 11/
-│               └── 14/
-│                   ├── 100000.ogg
-│                   ├── 100500.ogg
-│                   └── 101000.ogg
-│
-├── ntv-ke/
-│   ├── meta.json
-│   └── recordings/
-│       └── 2026/
-│           └── 11/
-│               └── 14/
-│                   ├── 100000.ogg
-│                   └── 100500.ogg
-│
-└── youtube-example/
-    ├── meta.json
-    └── recordings/
-        └── 2026/
-            └── 11/
-                └── 14/
-                    ├── 100000.ogg
-                    └── 100500.ogg
+                  WEB BROWSER
+                       |
+                       v
+             +----------------------+
+             |      Web UI          |
+             |   azure-devops-ui    |
+             +----------------------+
+                       |
+                       v
+             +----------------------+
+             |       Go API         |
+             |                      |
+             | Jobs                 |
+             | Discovery            |
+             | Timeline details     |
+             | Storage settings     |
+             | Stats and logs       |
+             +----------------------+
+                       |
+                       v
+             +----------------------+
+             |       SQLite         |
+             |                      |
+             | Jobs                 |
+             | Job attempts         |
+             | Discovery config     |
+             | Discovery runs       |
+             | Logs                 |
+             +----------------------+
+                       |
+                       v
+             +----------------------+
+             |   Job Scheduler      |
+             |                      |
+             | Manual/API events    |
+             | Recorder events      |
+             | Automatic discovery  |
+             +----------------------+
+                       |
+                       v
+             +----------------------+
+             |  Bounded Workers     |
+             +----------------------+
+                       |
+                       v
+             +----------------------+
+             |   Daily Job          |
+             |                      |
+             | Discover recordings  |
+             | Build timeline       |
+             | Download chunks      |
+             | Olaf cache           |
+             | Store fingerprints   |
+             | Validate index       |
+             | Upload artifacts     |
+             +----------------------+
+                  |           |
+                  v           v
+             Source S3     Olaf / LMDB
+                               |
+                               v
+                         Destination S3
 ```
 
-Object key pattern:
+All job initiation mechanisms must feed the same SQLite job queue.
+
+The discovery engine must never execute Olaf directly.
+
+---
+
+# 4. Object Storage
+
+## 4.1 Source recordings
+
+The source bucket uses this convention:
+
+```text
+spaza-recordings/
+└── {stream_id}/
+    ├── meta.json
+    ├── recordings/
+    │   └── YYYY/
+    │       └── MM/
+    │           └── DD/
+    │               ├── 000000.ogg
+    │               ├── 000500.ogg
+    │               ├── 001000.ogg
+    │               └── ...
+    └── transcripts/
+```
+
+Recording object key:
 
 ```text
 {stream_id}/recordings/YYYY/MM/DD/HHMMSS.{extension}
 ```
 
-**Important:** All source types use this chunk-based storage convention.
+All source types may use chunked recordings, including radio, television, YouTube, Twitch, podcasts, and other sources.
 
-Radio, television, YouTube, podcasts, Twitch and other sources may all have multiple timestamped recording chunks.
+Timestamps are derived from the filenames and interpreted using the stream's configured timezone.
 
-Do not implement separate chunk discovery logic for each source type.
+## 4.2 Destination indexes
 
-The indexer must use the same generic object discovery mechanism.
-
-## 3.4 Stream metadata
-
-Example `meta.json`:
-
-```json
-{
-  "id": "capital-fm-ke",
-  "name": "Capital FM Kenya",
-  "type": "radio",
-  "format": "ogg",
-  "created_at": "2026-11-14T10:00:00Z",
-  "updated_at": "2026-11-14T10:00:00Z",
-  "metadata": {
-    "country": "Kenya",
-    "city": "Nairobi",
-    "language": "English",
-    "frequency": "98.4 FM",
-    "operator": "Example Media"
-  }
-}
-```
-
-The indexer must:
-
-1. Read metadata from the stream root.
-2. Validate that `id` matches the stream directory.
-3. Preserve the complete metadata object.
-4. Avoid hardcoding source-specific metadata fields.
-5. Include a metadata snapshot in the generated index manifest.
-
-The `type` field is descriptive. It must not determine how chunks are discovered or processed.
-
-# 4. Destination index structure
-
-The destination bucket is organized by stream and indexing scope.
-
-Recommended structure:
+Indexes are stored alongside recordings:
 
 ```text
-s3://spaza-indexes/
-│
-├── capital-fm-ke/
-│   ├── meta.json
-│   │
-│   ├── daily/
-│   │   └── 2026/
-│   │       └── 11/
-│   │           ├── 13/
-│   │           │   ├── index.tar.zst
-│   │           │   └── manifest.json
-│   │           │
-│   │           └── 14/
-│   │               ├── index.tar.zst
-│   │               └── manifest.json
-│   │
-│   └── assets/
-│       └── {asset_id}/
-│           ├── index.tar.zst
-│           └── manifest.json
-│
-├── ntv-ke/
-│   ├── meta.json
-│   ├── daily/
-│   └── assets/
-│
-└── youtube-example/
+spaza-recordings/
+└── {stream_id}/
     ├── meta.json
-    ├── daily/
-    └── assets/
+    ├── recordings/
+    │   └── YYYY/MM/DD/
+    │       └── ...
+    ├── indexes/
+    │   └── YYYY/MM/DD/
+    │       ├── data.mdb
+    │       ├── lock.mdb
+    │       └── meta.json
+    └── transcripts/
 ```
 
-## 4.1 Indexing scopes
+The destination may be the same bucket as the source or a different bucket.
 
-The indexer supports two indexing scopes.
+Source and destination must have independently configurable:
 
-### Daily indexing
+- Endpoint.
+- Credentials.
+- Bucket.
+- Region.
+- Prefix.
+- Path-style setting.
 
-One index per stream per calendar day.
+Do not assume shared credentials or storage infrastructure.
 
-Example:
+## 4.3 Publication
 
-```text
-capital-fm-ke/daily/2026/11/14/
-```
+Publish in this order:
 
-This applies to any source type when the requested indexing unit is a day.
+1. Upload the LMDB database files.
+2. Verify successful uploads.
+3. Upload timeline and required supporting metadata.
+4. Upload `meta.json` last.
+5. Set `status` to `complete`.
+6. Mark the job completed in SQLite.
 
-### Asset indexing
+A downstream reader must not consider an index complete until it finds valid completion metadata.
 
-One index per logical asset.
+Do not rely on object-store directory rename operations.
 
-Examples:
+---
 
-- A YouTube video.
-- A podcast episode.
-- A Twitch session.
-- Another identifiable recording session.
+# 5. Job Model
 
-Example:
+## 5.1 Definition
 
-```text
-youtube-example/assets/video-12345/
-```
+One job represents:
 
-An asset can consist of multiple timestamped chunks.
-
-The application must never assume that all chunks within a date folder belong to one asset.
-
-Asset grouping must be established using explicit job metadata or a recording manifest. Do not infer asset boundaries from source type or filename alone.
-
-## 4.2 Index archive
-
-Each completed job produces:
-
-```text
-index.tar.zst
-manifest.json
-```
-
-The archive contains the complete LMDB database directory.
-
-The archive must be self-contained and restorable.
-
-The application must close OLAF and release LMDB resources before archiving the database.
-
-Do not upload an open or actively modified LMDB directory.
-
-The archive process must preserve the LMDB files and directory structure required to restore and open the database.
-
-## 4.3 Index manifest
+**One stream ID + one date.**
 
 Example:
 
 ```json
 {
-  "schema_version": 1,
-  "index_id": "capital-fm-ke-2026-11-14",
-  "stream": {
-    "id": "capital-fm-ke",
-    "name": "Capital FM Kenya",
-    "type": "radio",
-    "format": "ogg",
-    "metadata": {
-      "country": "Kenya",
-      "city": "Nairobi",
-      "language": "English",
-      "frequency": "98.4 FM",
-      "operator": "Example Media"
-    }
-  },
-  "scope": "daily",
-  "period": {
-    "date": "2026-11-14"
-  },
-  "source": {
-    "bucket": "spaza-recordings",
-    "prefix": "capital-fm-ke/recordings/2026/11/14/",
-    "chunks": 288,
-    "total_bytes": 123456789
-  },
-  "index": {
-    "engine": "olaf",
-    "format": "lmdb"
-  },
-  "archive": {
-    "filename": "index.tar.zst",
-    "compression": "zstd",
-    "size_bytes": 88000000,
-    "checksum_sha256": "..."
-  },
-  "created_at": "2026-11-15T00:15:00Z"
+  "stream_id": "capital-fm-ke",
+  "date": "2026-11-14",
+  "force": false
 }
 ```
 
-All values must be generated from actual processing results.
+All recording chunks belonging to this stream/date are processed as one logical daily stream.
 
-The manifest must also record:
+The job produces one daily LMDB index and one authoritative stream timeline.
 
-- Exact input object keys.
-- Input object sizes and available ETags/version IDs.
-- Detected missing intervals.
-- OLAF version.
-- Relevant indexing configuration.
-- Processing start and completion timestamps.
-- Validation result.
-- Archive checksum.
+## 5.2 Initiation sources
 
-The example is illustrative; the implementation should define and document a stable manifest schema.
+| Source | Description |
+|---|---|
+| Manual | Web interface |
+| API | REST API |
+| Recorder | Recording-complete notification |
+| Scheduler | Automatic discovery |
 
-## 4.4 Publishing an index
+Store the initiation source for audit purposes.
 
-Use this sequence:
-
-1. Complete fingerprinting.
-2. Close OLAF and LMDB.
-3. Validate the database.
-4. Create `index.tar.zst`.
-5. Calculate archive checksum.
-6. Upload the archive to a temporary object key.
-7. Verify successful upload and object metadata.
-8. Publish the archive under its final key.
-9. Upload `manifest.json` last.
-
-The presence of the final manifest indicates that the index has been published successfully.
-
-A failed upload must not create an index that appears complete.
-
-Use deterministic destination keys so retries do not create duplicate published indexes.
-
-# 5. Indexing engine and OLAF
-
-OLAF is the fingerprinting engine.
-
-Go is responsible for orchestration, job management, storage, process execution and operational monitoring.
-
-Go must not reimplement OLAF's fingerprinting functionality.
-
-## 5.1 OLAF execution
-
-For the initial implementation, use the OLAF CLI through Go's `os/exec`.
-
-Each job must have its own:
-
-- Working directory.
-- OLAF configuration.
-- Cache directory.
-- LMDB database directory.
-- Temporary audio preparation directory.
-
-Example:
+## 5.3 Job lifecycle
 
 ```text
-/var/lib/olaf-indexer/
-│
-└── jobs/
-    └── {job_id}/
-        ├── config/
-        │   └── olaf.json
-        ├── cache/
-        ├── db/
-        ├── input/
-        ├── output/
-        └── logs/
+queued
+  |
+  v
+downloading
+  |
+  v
+caching
+  |
+  v
+storing
+  |
+  v
+validating
+  |
+  v
+uploading
+  |
+  v
+completed
 ```
 
-Do not allow concurrent jobs to write into the same OLAF cache or LMDB directory.
+Additional terminal states:
 
-## 5.2 Chunk processing
+- `failed`
+- `cancelled`
 
-The application must discover and sort input chunks chronologically.
+Persist the current stage and progress in SQLite.
 
-It must not blindly treat multiple independent audio files as one continuous recording.
+## 5.4 Deduplication
 
-The audio preparation implementation must preserve the intended logical timeline.
+Prevent two active jobs for the same stream/date.
 
-Before finalizing the production indexing pipeline, perform a technical validation of:
+When `force=false`:
 
-- OLAF's supported input mechanisms.
-- Whether multiple input files preserve a common timeline.
-- Whether cache extraction across files preserves the required fingerprint relationships.
-- How timestamps are represented in the LMDB index.
-- How gaps between chunks should be handled.
-- Whether concatenation or streaming input is the appropriate method.
+- Return an existing active job.
+- Return or reference the completed job if its index already exists.
+- Do not rebuild an existing completed index unnecessarily.
 
-Do not assume that separate OLAF REST store requests share fingerprint state or preserve a global timeline.
+When `force=true`:
 
-For the initial implementation, prefer a clearly validated and reproducible audio preparation process over an optimization that has not been tested.
+- Create an explicit rebuild request.
+- Preserve previous job history.
+- Do not run two builds for the same stream/date simultaneously.
+- Publish the replacement only after successful validation.
 
-Missing chunks must be detected and recorded. Never silently join non-adjacent chunks as though they were continuous.
+A failed forced rebuild must not invalidate an existing completed index.
 
-## 5.3 OLAF validation
+## 5.5 Retry and cancellation
 
-The implementation must verify:
+Preserve attempt history, errors, and logs.
 
-- OLAF exits successfully.
-- The expected LMDB directory exists.
-- Database files are present.
-- The database can be reopened or queried after indexing.
-- The archive can be restored.
-- The restored database passes validation.
+Queued jobs can be cancelled immediately.
 
-If the output is invalid, the job must fail and must not publish an index.
+Running jobs should terminate their child processes safely, stop further work, clean up temporary files, and persist their cancelled state.
 
-## 5.4 OLAF configuration
+Never delete source recordings or a previously completed index during cancellation.
 
-Example application configuration:
+---
 
-```yaml
-olaf:
-  binary: "/usr/local/bin/olaf"
-  config_template: "/etc/olaf-indexer/olaf.json"
-  threads_per_job: 2
-  cache_enabled: true
-  validate_after_indexing: true
-```
+# 6. Automatic Job Discovery
 
-The worker must generate a job-specific OLAF configuration using isolated paths.
+Automatic discovery identifies recording dates that are eligible for indexing and submits them to the shared job queue.
 
-Do not assume that the example configuration or CLI commands are valid without checking the installed OLAF version.
-
-The implementation should include an initial OLAF integration test before developing the full worker pipeline.
-
-# 6. Job queue and concurrency
-
-SQLite is the persistent queue.
-
-The queue must survive application restarts.
-
-## 6.1 Job types
+## 6.1 Initiation mechanisms
 
 Support:
 
-- `daily`
-- `asset`
+1. Manual web job creation.
+2. REST API job creation.
+3. Recorder completion notifications.
+4. Scheduled automatic discovery.
 
-Each job must have a unique deterministic identity based on its logical scope.
+All four mechanisms must use the same job creation and deduplication logic.
+
+## 6.2 Discovery configuration
+
+The Discovery page must allow operators to configure:
+
+| Setting | Purpose |
+|---|---|
+| Enabled | Enable or disable automatic discovery |
+| Scan interval | Frequency of discovery |
+| Source storage | Storage connection to scan |
+| Stream scope | All streams or selected streams |
+| Date scope | Which recording dates to examine |
+| Lookback period | Number of previous days to inspect |
+| Readiness strategy | How recording completeness is determined |
+| Grace period | Time since last recording arrival |
+| Minimum recordings | Optional minimum chunk count |
+| Minimum duration | Optional minimum accumulated audio duration |
+| Maximum jobs per scan | Limit enqueueing |
+| Automatic enqueue | Whether eligible dates become jobs |
+| Dry run | Discover without creating jobs |
+
+## 6.3 Readiness strategies
+
+Support:
+
+**Completion event:** A recorder notifies the indexer that a stream/date is complete. The indexer still verifies that the expected objects are present.
+
+**Grace period:** The scanner checks the latest recording object's last-modified time and considers the date ready after the configured period without new recordings.
+
+The current date must not automatically be treated as complete.
+
+## 6.4 Discovery processing
+
+For each scan:
+
+1. Read the enabled discovery configuration.
+2. List stream/date recording prefixes.
+3. Identify eligible dates.
+4. Check the configured readiness conditions.
+5. Check whether a completed index already exists.
+6. Check whether a job is already queued or running.
+7. Enqueue eligible jobs.
+8. Record scan results.
+
+Discovery must be idempotent.
+
+Only one discovery scan may run at a time.
+
+Configuration changes must be persisted immediately and applied without restarting the application.
+
+## 6.5 Discovery configuration example
+
+```json
+{
+  "enabled": true,
+  "scan_interval_minutes": 30,
+  "source_storage": "source",
+  "stream_scope": "all",
+  "selected_streams": [],
+  "date_scope": "previous_days",
+  "lookback_days": 7,
+  "readiness": {
+    "strategy": "grace_period",
+    "grace_period_minutes": 30,
+    "minimum_recordings": 1,
+    "minimum_duration_seconds": 0
+  },
+  "automatic_enqueue": true,
+  "max_jobs_per_scan": 100,
+  "dry_run": false
+}
+```
+
+This is the application discovery configuration, not an Olaf configuration file.
+
+---
+
+# 7. Stream Timeline
+
+## 7.1 Purpose
+
+The stream timeline is a core artifact of every daily indexing job.
+
+It describes how the original timestamped recording chunks fit together chronologically to represent the stream during the indexed date.
+
+It must preserve:
+
+- Original recording start timestamps.
+- Actual recording durations.
+- Chronological order.
+- Logical timeline positions.
+- Missing recording intervals.
+- Overlapping recording intervals.
+- Mapping to Olaf reference resources and offsets.
+
+The timeline enables the query service to translate an Olaf match into the original broadcast occurrence timestamp.
+
+It is not merely a list of recording filenames.
+
+## 7.2 One logical stream per daily job
+
+All chunks for a stream/date belong to one logical daily stream.
+
+The indexing model is:
+
+```text
+Stream: capital-fm-ke
+Date:   2026-11-14
+
+One daily job
+    |
+    +-- Recording chunk 00:00
+    +-- Recording chunk 00:05
+    +-- Recording chunk 00:10
+    +-- Recording chunk 00:15
+    +-- ...
+    |
+    +-- One Olaf indexing session/workflow
+    |
+    +-- One daily LMDB database
+    |
+    +-- One authoritative stream timeline
+```
+
+Do not create an independent daily database for every five-minute recording.
+
+Do not create a separate job for each chunk.
+
+All chunks must be processed into the same daily LMDB database.
+
+The implementation may process or cache individual input files internally, but they must belong to the same daily job and database.
+
+## 7.3 Timeline construction
+
+Construct the timeline before fingerprinting.
+
+The process:
+
+1. List all recording objects under the stream/date prefix.
+2. Extract the nominal start timestamp from each filename.
+3. Sort recordings chronologically.
+4. Download the recordings.
+5. Determine actual durations using `ffprobe` or equivalent.
+6. Validate the recording metadata.
+7. Calculate each recording's logical timeline position.
+8. Identify gaps and overlaps.
+9. Persist the completed timeline manifest.
+10. Use that timeline when generating the Olaf index.
+
+Do not assume that every recording is exactly five minutes long.
+
+Actual duration must be used.
+
+## 7.4 Logical timeline offsets
+
+Every recording receives a logical position within the daily timeline.
+
+Use milliseconds or another consistent high-resolution time unit.
+
+Suggested recording entry:
+
+```json
+{
+  "resource_id": "capital-fm-ke-20261114-000000",
+  "object_key": "capital-fm-ke/recordings/2026/11/14/000000.ogg",
+  "start_time": "2026-11-14T00:00:00Z",
+  "duration_ms": 300000,
+  "timeline_start_ms": 0,
+  "timeline_end_ms": 300000,
+  "olaf_reference_id": "capital-fm-ke-20261114-000000",
+  "status": "indexed"
+}
+```
+
+The logical timeline position represents where that recording belongs in the chronological daily stream.
+
+For recordings that are contiguous:
+
+```text
+Chunk A:
+    timeline_start_ms = 0
+    timeline_end_ms   = 300000
+
+Chunk B:
+    timeline_start_ms = 300000
+    timeline_end_ms   = 600000
+
+Chunk C:
+    timeline_start_ms = 600000
+    timeline_end_ms   = 900000
+```
+
+For a missing interval, the next recording must retain its actual chronological position.
+
+Example:
+
+```text
+00:00 - 00:05  Recording A
+00:05 - 00:10  Recording B
+00:10 - 00:15  Missing
+00:15 - 00:20  Recording C
+```
+
+The logical timeline must represent the gap:
+
+```text
+Recording A: 0       - 300000 ms
+Recording B: 300000  - 600000 ms
+Gap:         600000  - 900000 ms
+Recording C: 900000  - 1200000 ms
+```
+
+Do not shift Recording C backwards to close the gap.
+
+Do not treat non-adjacent recordings as contiguous.
+
+The timeline must preserve actual elapsed time.
+
+## 7.5 Gaps
+
+A gap represents an interval in which no recording is available.
+
+Possible causes:
+
+- Recorder interruption.
+- Source outage.
+- Network failure.
+- Missing object.
+- Delayed upload.
+- Incomplete recording.
+
+Represent gaps explicitly.
+
+Example:
+
+```json
+{
+  "start_time": "2026-11-14T00:10:00Z",
+  "end_time": "2026-11-14T00:15:00Z",
+  "timeline_start_ms": 600000,
+  "timeline_end_ms": 900000,
+  "duration_ms": 300000,
+  "reason": "missing_recording"
+}
+```
+
+If the cause is unknown, use `unknown`.
+
+Never invent a cause.
+
+The indexing pipeline must not silently bridge missing intervals.
+
+## 7.6 Overlaps
+
+Overlaps occur when two recordings cover some of the same wall-clock interval.
 
 For example:
 
 ```text
-daily:capital-fm-ke:2026-11-14
-asset:youtube-example:video-12345
+Recording A: 00:00:00 - 00:05:00
+Recording B: 00:04:55 - 00:09:55
 ```
 
-The application must prevent duplicate active jobs for the same logical indexing unit.
+The timeline must preserve both original recording intervals and flag the overlap.
 
-Allow deliberate re-indexing through an explicit force/rebuild action.
+Do not silently change original timestamps or discard an overlapping recording.
 
-## 6.2 Job states
+The implementation must define and test a consistent logical-position policy for overlaps.
 
-Use these states:
+Where multiple source recordings cover the same wall-clock time, the timeline should retain the original interval information so the query service can resolve the corresponding occurrence without losing provenance.
+
+## 7.7 Daily boundaries and timezone
+
+The job date is interpreted using the stream's configured timezone.
+
+Store canonical timestamps in UTC.
+
+Preserve the original timezone identifier, such as:
 
 ```text
-queued
-discovering
-downloading
-preparing
-indexing
-validating
-archiving
-uploading
-completed
-failed
-cancelled
+Africa/Nairobi
 ```
 
-The application should expose these states consistently through the API and UI.
+The timeline must handle:
 
-## 6.3 Job progress
+- Day boundaries.
+- Timezone conversion.
+- Daylight-saving changes where applicable.
+- Recordings whose actual duration crosses midnight.
+- Chunks whose filename timestamp and measured duration disagree.
 
-Track progress for each major processing stage.
+A daily job should not silently discard audio that crosses a calendar boundary. The implementation must preserve the original chunk's complete interval and explicitly define how boundary-crossing recordings are assigned to daily jobs.
 
-Example:
+## 7.8 Timeline and Olaf mapping
 
-| Stage | Progress information |
-|---|---|
-| Discovery | Objects discovered |
-| Download | Chunks and bytes downloaded |
-| Preparation | Audio preparation status |
-| Indexing | OLAF execution status |
-| Validation | Validation result |
-| Archiving | Archive size and progress |
-| Upload | Bytes uploaded |
+The timeline is the bridge between Olaf's internal reference positions and real broadcast time.
 
-Overall progress should be calculated from actual stage progress, not arbitrary increments.
-
-If OLAF does not expose reliable fingerprinting progress, show its state as running rather than inventing a percentage.
-
-## 6.4 Concurrency
-
-Use a configurable maximum number of concurrent jobs.
-
-Example:
-
-```yaml
-service:
-  max_concurrent_jobs: 4
-  job_timeout: "24h"
-  workspace_dir: "/var/lib/olaf-indexer/jobs"
-
-queue:
-  max_attempts: 5
-  retry_backoff: "30s"
-  lease_timeout: "60s"
-```
-
-These are initial configuration examples, not guaranteed performance settings.
-
-Benchmark CPU, memory, disk I/O and OLAF behavior before selecting production values.
-
-Each worker must claim jobs atomically using SQLite transactions.
-
-Use:
-
-- SQLite WAL mode.
-- Busy timeout.
-- Job leases.
-- Worker heartbeats.
-- Retry backoff.
-- Stale-job recovery.
-- Graceful shutdown.
-
-A worker restart must not leave jobs permanently stuck in a running state.
-
-## 6.5 Retry behavior
-
-A failed job should retain its error and processing history.
-
-Retrying a job must reuse already completed stages when their outputs remain valid.
-
-For example, an upload failure should not require fingerprinting the audio again if the completed LMDB archive is still available locally.
-
-Use a configurable retry limit.
-
-After the limit is reached, mark the job as failed and wait for manual intervention.
-
-# 7. SQLite database
-
-Keep the schema simple.
-
-The minimum tables are:
-
-## 7.1 `jobs`
-
-Stores indexing jobs.
-
-Suggested columns:
+For every indexed recording, maintain:
 
 ```text
-id
-job_key
-stream_id
-asset_id
-scope
-recording_date
-status
-priority
-attempts
-source_bucket
-source_prefix
-destination_bucket
-destination_prefix
-total_objects
-processed_objects
-total_bytes
-processed_bytes
-progress
-worker_id
-lease_expires_at
-workspace
-last_error
-created_at
-started_at
-completed_at
-updated_at
+Olaf reference ID
+    -> timeline entry
+        -> original object key
+        -> original recording start time
+        -> actual duration
+        -> logical timeline offset
 ```
 
-Store the effective source and destination bucket/prefix on each job. This ensures that a job retains its intended storage targets even if configuration changes later.
+The implementation must verify the exact identifier and offset semantics returned by the installed Olaf version.
 
-Do not store plaintext storage secrets in job records.
-
-## 7.2 `job_sources`
-
-Records the input objects associated with a job.
+If Olaf returns a match against a recording resource with an offset within that resource:
 
 ```text
-id
-job_id
-object_key
-size_bytes
-etag
-last_modified
-status
-downloaded_at
+absolute_occurrence_time =
+    recording_start_time + reference_offset
 ```
 
-Use this table to track discovered and downloaded chunks.
-
-## 7.3 `job_events`
-
-Stores job history and operational events.
+If Olaf returns a position on a logical daily timeline:
 
 ```text
-id
-job_id
-level
-component
-message
-created_at
+absolute_occurrence_time =
+    timeline_origin + logical_timeline_offset
 ```
 
-## 7.4 `workers`
+These are two possible mapping paths, not interchangeable assumptions.
 
-Stores local worker status.
+The implementation must determine which position Olaf actually returns and use the corresponding mapping.
 
-```text
-id
-hostname
-status
-current_job_id
-started_at
-last_heartbeat
-```
+The final query-service interface must be able to resolve an Olaf match to:
 
-The service may run multiple workers inside one process. Worker records are for operational visibility and recovery, not a requirement for distributed execution.
-
-Use SQLite migrations and indexes for job lookup, filtering, leases and event retrieval.
-
-# 8. Go API
-
-The frontend must communicate exclusively with the Go API.
-
-Use JSON responses and consistent error formats.
-
-## 8.1 Overview
-
-```http
-GET /api/overview
-```
-
-Returns:
-
-- Service status.
-- Queued jobs.
-- Running jobs.
-- Completed jobs today.
-- Failed jobs.
-- Active workers.
-- Storage connection status.
-- Recent activity.
-
-## 8.2 Jobs
-
-```http
-GET    /api/jobs
-GET    /api/jobs/{id}
-POST   /api/jobs
-POST   /api/jobs/{id}/retry
-POST   /api/jobs/{id}/cancel
-GET    /api/jobs/{id}/events
-GET    /api/jobs/{id}/sources
-```
-
-Job creation should accept:
-
-```json
-{
-  "scope": "daily",
-  "stream_id": "capital-fm-ke",
-  "date": "2026-11-14"
-}
-```
-
-Asset example:
-
-```json
-{
-  "scope": "asset",
-  "stream_id": "youtube-example",
-  "asset_id": "video-12345",
-  "source_objects": [
-    "youtube-example/recordings/2026/11/14/100000.ogg",
-    "youtube-example/recordings/2026/11/14/100500.ogg"
-  ]
-}
-```
-
-The asset example uses explicitly supplied input objects. An asset manifest or another reliable discovery mechanism can be added later.
-
-## 8.3 Streams
-
-```http
-GET /api/streams
-GET /api/streams/{id}
-GET /api/streams/{id}/recordings
-GET /api/streams/{id}/indexes
-```
-
-The API should discover stream metadata from the source bucket and recording availability from the recordings prefixes.
-
-## 8.4 Indexes
-
-```http
-GET /api/indexes
-GET /api/indexes/{id}
-GET /api/indexes/{id}/manifest
-```
-
-Only successfully published indexes should appear in the main index catalogue.
-
-## 8.5 Workers and logs
-
-```http
-GET /api/workers
-GET /api/logs
-GET /api/health
-```
-
-Use Server-Sent Events (SSE) for live job and log updates if required.
-
-Polling is acceptable for the initial MVP if it keeps the implementation simpler.
-
-## 8.6 Settings
-
-```http
-GET  /api/settings
-PUT  /api/settings
-POST /api/settings/storage/source/test
-POST /api/settings/storage/destination/test
-POST /api/settings/olaf/test
-```
-
-Never return plaintext credentials in GET responses.
-
-Settings updates must validate configuration before applying it.
-
-Changes to storage configuration must not silently redirect already-running jobs.
-
-# 9. Web interface — Azure DevOps UI
-
-This is a mandatory design requirement.
-
-The application must adopt the Azure DevOps UI look and feel throughout the interface.
-
-Use the actual React components from:
-
-https://www.npmjs.com/package/azure-devops-ui
-
-Repository:
-
-https://github.com/Microsoft/azure-devops-ui-public
-
-Reference:
-
-https://developer.microsoft.com/en-us/azure-devops/components
-
-The Azure DevOps UI component system includes patterns for page structure, tables, tabs, panels, filters, status, dialogs, notifications and other operational controls.
-
-Use these components as the foundation rather than recreating them with generic HTML and custom CSS.
-
-## 9.1 Overall layout
-
-The application must have:
-
-- A charcoal application header.
-- A horizontal tab navigation.
-- A light neutral page background.
-- Bordered, boxed content sections.
-- Compact Azure DevOps-style tables.
-- Right-side detail drawers.
-- Azure DevOps-style command bars, filters, buttons and dialogs.
-
-**There must be no sidebar.**
-
-Primary navigation:
-
-```text
-┌──────────────────────────────────────────────────────────────┐
-│ SPAZA  Indexer                              Service: Online   │
-├──────────────────────────────────────────────────────────────┤
-│ Overview   Jobs   Streams   Indexes   Workers   Logs   Settings│
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  Page title                                   Page actions    │
-│  Description                                                 │
-│                                                              │
-│  ┌────────────────────────────────────────────────────────┐  │
-│  │                                                        │  │
-│  │                  Boxed content                         │  │
-│  │                                                        │  │
-│  └────────────────────────────────────────────────────────┘  │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
-```
-
-## 9.2 Azure DevOps component adoption
-
-Use the package's available components and patterns for these elements:
-
-| Interface element | Azure DevOps UI |
-|---|---|
-| Application header | Header |
-| Main page structure | Page |
-| Horizontal navigation | Tabs / TabBar / Pivot pattern |
-| Tables | Table |
-| Filters | FilterBar / Filter |
-| Command toolbar | HeaderCommandBar |
-| Detail drawer | Panel / DetailsPanel |
-| Inner drawer navigation | Tabs |
-| Status indicators | Status / Pill |
-| Progress | ProgressBar |
-| Dialogs | Dialog |
-| Notifications | MessageBar / Toast |
-| Loading states | Spinner |
-| Empty states | ZeroData |
-| Buttons | Button |
-| Form inputs | TextField, Dropdown, Checkbox |
-| Icons | Azure DevOps Icon |
-
-Confirm component exports and APIs against the installed package version. Do not invent component props or copy outdated examples without checking the installed TypeScript definitions.
-
-## 9.3 Visual design requirements
-
-Use this Spaza palette:
-
-| Element | Color |
-|---|---|
-| Header | `#242322` |
-| Main background | `#FAF9F8` |
-| Box background | `#FFFFFF` |
-| Secondary background | `#F4F3F2` |
-| Border | `#EDEBE9` |
-| Primary text | `#323130` |
-| Secondary text | `#605E5C` |
-| Accent | `#A85F34` |
-
-Design requirements:
-
-- Compact typography.
-- Subtle separators and borders.
-- Minimal corner rounding.
-- No excessive card shadows.
-- No gradients.
-- No oversized dashboard cards.
-- No intense orange active indicators.
-- Consistent alignment and spacing.
-- Information-dense tables.
-- Clear visual distinction between primary and secondary actions.
-
-Use the library's styling conventions and theme utilities where possible. Avoid overriding its component styles globally in ways that break component behavior.
-
-## 9.4 Main tabs
-
-### Overview
-
-Show:
-
-- Queued jobs.
-- Running jobs.
-- Completed today.
-- Failed jobs.
-- Active processing jobs.
-- Recent activity.
-- Source and destination storage health.
-
-Keep this page compact and operational.
-
-### Jobs
-
-This is the primary working page.
-
-Command bar:
-
-- New job.
-- Retry.
-- Cancel.
-- Refresh.
-
-Table columns:
-
-| Column | Description |
-|---|---|
-| Job ID | Unique job identifier |
-| Stream | Stream name |
-| Scope | Daily or asset |
-| Period / Asset | Date or asset ID |
-| Status | Current state |
-| Progress | Processing progress |
-| Chunks | Processed / total |
-| Duration | Elapsed time |
-| Created | Job creation time |
-
-Provide filters for:
-
-- Status.
-- Stream.
-- Source type.
-- Scope.
-- Date range.
-- Worker.
-
-Clicking a row opens a right-side details panel.
-
-The details panel contains tabs:
-
-1. Summary.
-2. Input.
-3. Processing.
-4. Output.
-5. Events.
-
-The panel should show stage progress, input chunks, missing intervals, errors, archive information and job history.
-
-### Streams
-
-Show streams discovered in the source bucket.
-
-Table columns:
-
-- Stream name.
 - Stream ID.
-- Source type.
-- Format.
-- Last recording.
-- Available recording days.
-- Index coverage.
+- Original recording object.
+- Original UTC occurrence timestamp.
+- Stream-local occurrence timestamp.
+- Match duration, where available.
 
-Clicking a stream opens a details panel with:
+Do not use temporary local paths as permanent identifiers.
 
-- Stream metadata.
-- Recording inventory.
-- Available dates.
-- Existing indexes.
-- Missing index dates.
-- Indexing history.
+### Important Olaf verification
 
-Provide actions for creating daily and asset indexing jobs.
+The implementation must verify:
 
-### Indexes
+- How stable resource IDs are assigned.
+- Whether IDs survive `cache` and `store_cached`.
+- Whether reference offsets are per resource or relative to a larger input.
+- Whether the cache workflow supports custom identifiers.
+- How multiple input files are represented in the resulting LMDB database.
 
-Show successfully published indexes.
+Olaf's `--with-ids` support must not be assumed to work identically in every command.
 
-Table columns:
+Do not implement timestamp conversion until the actual Olaf result semantics have been verified.
 
-- Index ID.
-- Stream.
-- Scope.
-- Period or asset.
-- Archive size.
-- OLAF version.
-- Published date.
-- Validation status.
+## 7.9 Timeline file format
 
-The detail panel should expose:
-
-- Manifest.
-- Input inventory.
-- Archive key.
-- Checksum.
-- Validation result.
-- Archive retrieval information.
-
-Do not show incomplete or failed uploads as published indexes.
-
-### Workers
-
-Show:
-
-- Worker ID.
-- Hostname.
-- Status.
-- Current job.
-- CPU utilization.
-- Memory usage.
-- OLAF process status.
-- Last heartbeat.
-
-Also show configured maximum job concurrency.
-
-### Logs
-
-Provide a searchable event viewer.
-
-Filters:
-
-- Time range.
-- Log level.
-- Job ID.
-- Worker.
-- Component.
-
-Components include:
-
-- Scheduler.
-- Queue.
-- S3 downloader.
-- Audio preparation.
-- OLAF runner.
-- LMDB validator.
-- Archive.
-- S3 uploader.
-
-Clicking a job reference should open its detail panel.
-
-### Settings
-
-Use tabs inside Settings:
-
-**General**
-- Service name.
-- Timezone.
-- Workspace directory.
-- Log level.
-
-**Source storage**
-- Endpoint.
-- Region.
-- Bucket.
-- Access key.
-- Secret key.
-- Session token.
-- Path-style option.
-- TLS option.
-- Test connection.
-
-**Destination storage**
-- Endpoint.
-- Region.
-- Bucket.
-- Access key.
-- Secret key.
-- Session token.
-- Path-style option.
-- TLS option.
-- Test connection.
-
-Source and destination must have independent forms and independent connection tests.
-
-The UI may provide an explicit "Use source credentials" convenience option, but copying credentials must be an intentional user action. Editing one connection must not automatically alter the other.
-
-**OLAF**
-- Binary path.
-- Configuration.
-- Threads per job.
-- Cache settings.
-- Validation settings.
-- Test OLAF.
-
-**Queue and workers**
-- Maximum concurrent jobs.
-- Maximum attempts.
-- Retry delay.
-- Lease timeout.
-- Job timeout.
-
-**Maintenance**
-- Workspace cleanup.
-- Retention policy.
-- Disk usage.
-- Health checks.
-
-All secrets must be masked. Never return stored secrets through the API.
-
-## 9.5 Drawers and dialogs
-
-Use Azure DevOps-style panels for details.
-
-Examples:
-
-- Job details.
-- Stream details.
-- Index details.
-- Worker details.
-
-Use dialogs for:
-
-- Creating jobs.
-- Confirming cancellation.
-- Confirming re-indexing.
-- Destructive maintenance operations.
-
-Do not navigate to a separate page for every record.
-
-Keep the user in the current tab and open details in a panel.
-
-## 9.6 Frontend simplicity
-
-Keep the frontend small.
-
-Use one main application component to manage the active tab and shared detail panel.
-
-Avoid creating a separate file for every page, table, drawer or small component.
-
-Use the Azure DevOps components directly wherever possible.
-
-# 10. Application configuration
-
-Example complete configuration:
-
-```yaml
-service:
-  name: "Spaza OLAF Indexer"
-  listen: "0.0.0.0:8080"
-  timezone: "Africa/Nairobi"
-  workspace_dir: "/var/lib/olaf-indexer"
-  max_concurrent_jobs: 4
-  job_timeout: "24h"
-
-database:
-  path: "/var/lib/olaf-indexer/indexer.db"
-  journal_mode: "WAL"
-  busy_timeout: "5s"
-
-storage:
-  source:
-    endpoint: "https://source.example.com"
-    region: "auto"
-    bucket: "spaza-recordings"
-    access_key_id_env: "SOURCE_S3_ACCESS_KEY"
-    secret_access_key_env: "SOURCE_S3_SECRET_KEY"
-    session_token_env: ""
-    force_path_style: true
-    use_tls: true
-
-  destination:
-    endpoint: "https://destination.example.com"
-    region: "auto"
-    bucket: "spaza-indexes"
-    access_key_id_env: "DESTINATION_S3_ACCESS_KEY"
-    secret_access_key_env: "DESTINATION_S3_SECRET_KEY"
-    session_token_env: ""
-    force_path_style: true
-    use_tls: true
-
-olaf:
-  binary: "/usr/local/bin/olaf"
-  config_template: "/etc/olaf-indexer/olaf.json"
-  threads_per_job: 2
-  cache_enabled: true
-  validate_after_indexing: true
-
-queue:
-  max_attempts: 5
-  retry_backoff: "30s"
-  lease_timeout: "60s"
-
-archive:
-  format: "tar.zst"
-  compression_level: 3
-
-logging:
-  level: "info"
-  format: "json"
-```
-
-The configuration is an example. Validate actual supported fields and OLAF settings against the installed versions.
-
-Credentials must not be written into the YAML file.
-
-# 11. Minimal project structure
-
-Keep the project intentionally small.
+Store the authoritative timeline as a separate file:
 
 ```text
-olaf-indexer/
-│
-├── main.go
-├── go.mod
-├── config.yaml
-│
-├── internal/
-│   ├── api.go
-│   ├── database.go
-│   ├── storage.go
-│   ├── worker.go
-│   └── olaf.go
-│
-├── migrations/
-│   └── schema.sql
-│
-└── web/
-    ├── package.json
-    ├── index.html
-    └── src/
-        ├── main.tsx
-        ├── App.tsx
-        └── style.css
+{stream_id}/indexes/YYYY/MM/DD/
+    data.mdb
+    lock.mdb
+    timeline.json
+    meta.json
 ```
 
-File responsibilities:
+`timeline.json` contains the recording inventory, logical positions, gaps, overlaps, and Olaf reference mapping.
 
-| File | Responsibility |
-|---|---|
-| `main.go` | Load configuration, initialize services, start HTTP server and workers |
-| `api.go` | HTTP routes and API handlers |
-| `database.go` | SQLite initialization, migrations and database operations |
-| `storage.go` | Source discovery, downloads, destination uploads and S3 clients |
-| `worker.go` | Queue scheduling, job execution, progress and retries |
-| `olaf.go` | OLAF subprocess management, audio preparation integration and LMDB validation |
-| `schema.sql` | Database schema |
-| `App.tsx` | Main UI, horizontal tabs, page rendering, drawers and dialogs |
-| `style.css` | Application theme and layout styling |
-| `main.tsx` | React entry point |
+Keep `meta.json` relatively small. It should identify the timeline file, its format version, and its checksum.
 
-Do not create extra packages or files unless there is a concrete reason.
+This is a required index artifact, not an optional diagnostic file.
 
-# 12. Operational requirements
+Suggested structure:
 
-## 12.1 Deployment
-
-The MVP should run on a Linux server as a systemd service.
-
-Suggested locations:
-
-```text
-/opt/olaf-indexer/
-/etc/olaf-indexer/
-/var/lib/olaf-indexer/
+```json
+{
+  "version": 1,
+  "stream_id": "capital-fm-ke",
+  "date": "2026-11-14",
+  "timezone": "Africa/Nairobi",
+  "timeline_origin": "2026-11-14T00:00:00Z",
+  "timeline_duration_ms": 86400000,
+  "recordings": [
+    {
+      "resource_id": "capital-fm-ke-20261114-000000",
+      "object_key": "capital-fm-ke/recordings/2026/11/14/000000.ogg",
+      "start_time": "2026-11-14T00:00:00Z",
+      "duration_ms": 300000,
+      "timeline_start_ms": 0,
+      "timeline_end_ms": 300000,
+      "olaf_reference_id": "capital-fm-ke-20261114-000000",
+      "status": "indexed"
+    }
+  ],
+  "gaps": [],
+  "overlaps": [],
+  "summary": {
+    "recordings_discovered": 288,
+    "recordings_indexed": 288,
+    "recordings_failed": 0,
+    "total_recorded_duration_ms": 86400000,
+    "total_gap_duration_ms": 0
+  }
+}
 ```
 
-Use:
+The example assumes a full 24-hour recording day. Actual timeline duration and counts must be calculated from the recordings.
 
-- Application binary under `/opt`.
-- Configuration under `/etc`.
-- SQLite database and job workspaces under `/var/lib`.
+The implementation must not assume that a date contains 86,400 seconds in every timezone.
 
-The service must support:
+Use a versioned schema so that downstream query services can identify the timeline format.
 
-- Automatic startup.
-- Graceful shutdown.
-- Log output to journald or structured log files.
-- Health endpoint.
-- Restart recovery.
-- Configurable resource limits.
+## 7.10 Timeline validation
 
-## 12.2 Disk management
+Before publishing, verify:
 
-The service downloads and prepares audio locally, so disk capacity must be monitored.
+- Every discovered recording has a timeline entry.
+- Every successfully indexed recording has a valid Olaf reference mapping.
+- Start timestamps are valid.
+- Durations are positive.
+- Timeline positions are consistent.
+- Gaps are represented explicitly.
+- Overlaps are represented explicitly.
+- No recording is accidentally omitted.
+- The timeline summary matches the recording inventory.
+- The timeline checksum matches the uploaded file.
 
-Show:
-
-- Total disk capacity.
-- Available disk space.
-- Workspace usage.
-- Active job workspace usage.
-- Archive staging usage.
-
-Do not delete job workspaces while a job is active.
-
-Retain completed workspaces until the archive is safely published and the configured cleanup policy permits removal.
-
-Retain failed workspaces for troubleshooting according to a configurable policy.
-
-## 12.3 Security
-
-- Do not expose S3 credentials to React.
-- Do not log secrets.
-- Validate all API input.
-- Restrict the web interface to authorized operators.
-- Use HTTPS when deployed beyond localhost or a trusted private network.
-- Validate storage endpoint configuration.
-- Protect settings updates.
-- Do not expose arbitrary filesystem paths or unrestricted command execution through the API.
-- Use safe process argument construction rather than shell interpolation.
-
-# 13. Testing requirements
-
-## 13.1 Storage tests
-
-Test:
-
-- Source and destination using identical credentials.
-- Source and destination using different credentials.
-- Different S3-compatible providers.
-- Different endpoints and regions.
-- Missing credentials.
-- Invalid bucket.
-- Insufficient source permissions.
-- Insufficient destination permissions.
-- Failed multipart upload.
-- Interrupted upload and retry.
-
-## 13.2 Recording discovery tests
-
-Test:
-
-- Radio stream with multiple chunks.
-- TV stream with multiple chunks.
-- YouTube recording with multiple chunks.
-- Podcast recording with multiple chunks.
-- Mixed audio extensions.
-- Missing chunks.
-- Duplicate or conflicting objects.
-- Empty date prefix.
-- Invalid metadata.
-- Invalid timestamps.
-
-All source types must use the same generic discovery implementation.
-
-## 13.3 Job tests
-
-Test:
-
-- Daily indexing.
-- Asset indexing.
-- Duplicate job prevention.
-- Concurrent jobs.
-- Job cancellation.
-- Worker restart.
-- Retry after download failure.
-- Retry after OLAF failure.
-- Retry after archive failure.
-- Retry after upload failure.
-- Re-indexing an existing index.
-
-## 13.4 Index integrity tests
-
-Test:
-
-- LMDB database creation.
-- LMDB close and reopen.
-- Archive creation.
-- Archive restoration.
-- Checksum verification.
-- Manifest correctness.
-- Publication ordering.
-- No published manifest for incomplete indexes.
-
-# 14. Development phases
-
-Build the platform in the following order.
-
-## Phase 1 — Foundation
-
-- Create the Go application.
-- Load YAML configuration.
-- Initialize SQLite.
-- Implement independent source and destination S3 clients.
-- Implement source and destination connection tests.
-- Create the React application.
-- Install and configure Azure DevOps UI.
-- Implement the application header and horizontal tabs.
-- Establish the boxed page layout and theme.
-
-**Deliverable:** Running application with storage connection testing and the basic UI shell.
-
-## Phase 2 — Source discovery
-
-- Read stream metadata.
-- Discover stream directories.
-- Discover recording chunks.
-- Sort chunks chronologically.
-- Calculate object counts and sizes.
-- Detect missing intervals.
-- Display streams and recordings in the UI.
-
-**Deliverable:** Functional Streams page and generic source inventory.
-
-## Phase 3 — Job queue
-
-- Create SQLite job schema.
-- Implement job creation.
-- Implement atomic job claiming.
-- Implement worker scheduling.
-- Implement status transitions.
-- Implement retry and cancellation.
-- Display jobs and job details.
-
-**Deliverable:** Persistent job queue and functional Jobs page.
-
-## Phase 4 — OLAF integration
-
-- Validate OLAF executable and configuration.
-- Create isolated job workspaces.
-- Implement audio preparation.
-- Implement OLAF execution.
-- Capture process output and errors.
-- Validate LMDB creation and reopening.
-- Track job progress.
-
-Before completing this phase, verify the actual OLAF behavior for processing sequential chunks and preserving the intended logical timeline.
-
-**Deliverable:** A working end-to-end indexing job that produces a valid LMDB database.
-
-## Phase 5 — Archiving and publishing
-
-- Package LMDB into `index.tar.zst`.
-- Calculate checksums.
-- Upload to destination storage.
-- Verify uploaded objects.
-- Publish manifest last.
-- Implement upload retry without re-indexing.
-- Display published indexes.
-
-**Deliverable:** Complete source-to-destination indexing pipeline.
-
-## Phase 6 — Operations UI
-
-- Complete Overview.
-- Complete Streams.
-- Complete Indexes.
-- Complete Workers.
-- Complete Logs.
-- Complete Settings.
-- Add drawers, filters, dialogs and notifications.
-- Add live updates or polling.
-
-**Deliverable:** Fully usable operations console.
-
-## Phase 7 — Production readiness
-
-- Test restart recovery.
-- Test concurrent workloads.
-- Test storage failures.
-- Test large recording days.
-- Test disk cleanup.
-- Test archive restoration.
-- Configure systemd.
-- Document installation and operation.
-
-**Deliverable:** Deployable MVP.
-
-# 15. MVP acceptance criteria
-
-The platform is considered functional when:
-
-1. It can connect independently to source and destination S3-compatible buckets.
-2. The two connections can use different credentials and endpoints.
-3. It can read stream metadata from `meta.json`.
-4. It can discover timestamped recording chunks for all source types.
-5. It supports daily and asset indexing scopes.
-6. It can create and persist indexing jobs in SQLite.
-7. It can process multiple independent jobs concurrently.
-8. Each job uses an isolated OLAF workspace and LMDB database.
-9. It can create and validate a self-contained LMDB archive.
-10. It can upload the archive and manifest to destination storage.
-11. Failed uploads can be retried without repeating fingerprinting when the local archive is still available.
-12. Jobs survive application restarts.
-13. Operators can inspect jobs, streams, indexes, workers and logs.
-14. The interface adopts Azure DevOps UI components and styling.
-15. The interface uses horizontal tabs, boxed layouts and right-side detail panels, with no sidebar.
-16. The application runs as a single Go service with a compiled React frontend.
+An indexing job must not be marked completed if its timeline is missing or invalid.
 
 ---
 
-# 16. Final implementation guidance
+# 8. Job Processing Pipeline
 
-Prioritize a working indexing pipeline over a feature-rich dashboard.
+The complete pipeline is:
 
-The most important technical milestone is:
+```text
+1. Validate job
+2. Discover recording objects
+3. Create isolated workspace
+4. Download recordings
+5. Probe actual durations
+6. Build chronological stream timeline
+7. Validate timeline
+8. Generate Olaf fingerprint cache
+9. Store fingerprints in one daily LMDB
+10. Validate LMDB
+11. Validate Olaf reference mapping
+12. Generate final timeline.json
+13. Upload LMDB files
+14. Upload timeline.json
+15. Upload meta.json last
+16. Mark job completed
+17. Clean local workspace
+```
 
-**Read chunks from source storage → prepare the logical recording → index with OLAF → produce a valid LMDB → archive → upload to destination storage → publish manifest.**
+## 8.1 Workspace
 
-Once this pipeline works reliably, the rest of the platform is primarily job management and operational visibility.
+```text
+/var/lib/olaf-indexer/
+├── indexer.db
+└── jobs/
+    └── {job_id}/
+        ├── audio/
+        ├── cache/
+        ├── index/
+        ├── timeline.json
+        └── manifest.json
+```
 
-Keep the code small, use the actual Azure DevOps UI components, and avoid introducing infrastructure that the MVP does not need.
+Each daily job has its own workspace.
+
+Never share an Olaf cache or LMDB database between jobs.
+
+## 8.2 Download
+
+- List only objects for the requested stream/date.
+- Filter supported audio formats.
+- Preserve original object keys.
+- Download using bounded concurrency.
+- Validate successful downloads.
+- Record download errors.
+- Never delete or modify source recordings.
+
+## 8.3 Audio inspection
+
+Use `ffprobe` or equivalent to determine:
+
+- Actual duration.
+- Audio format.
+- Sample rate.
+- Channel count.
+- Readability.
+
+Do not infer duration from filenames.
+
+Do not assume all chunks have the same duration.
+
+## 8.4 Olaf cache
+
+Use Olaf's cache workflow to separate fingerprint extraction from LMDB insertion.
+
+Conceptually:
+
+```bash
+olaf cache --threads N <audio-files>
+olaf store_cached
+```
+
+Each daily job must use its own cache and database configuration.
+
+The implementation must verify the installed Olaf version's configuration selection, cache directory, database directory, and resource ID behaviour.
+
+Capture stdout, stderr, and exit codes.
+
+Use safe subprocess execution through Go. Do not concatenate user input into shell commands.
+
+## 8.5 One daily LMDB
+
+All recordings belonging to a stream/date must be indexed into one daily LMDB database.
+
+The internal processing may involve multiple files and fingerprint extraction operations, but the output must remain one daily database.
+
+Do not create one LMDB database per recording chunk.
+
+Do not create one independent indexing job per chunk.
+
+## 8.6 Validation
+
+Before upload, verify:
+
+- Olaf completed successfully.
+- LMDB files exist.
+- The database contains fingerprints.
+- The expected recording resources are represented.
+- The timeline is valid.
+- The Olaf reference mapping is complete.
+- The index metadata can be generated.
+
+Do not publish an empty, corrupt, or incomplete index as completed.
+
+## 8.7 Cleanup
+
+After successful publication:
+
+- Remove local audio.
+- Remove Olaf cache.
+- Remove temporary LMDB workspace.
+- Retain job logs and metadata in SQLite.
+
+On failure, retain sufficient diagnostic information for troubleshooting, subject to the configured cleanup policy.
+
+---
+
+# 9. Index Metadata
+
+Each completed index must contain `meta.json`.
+
+Example:
+
+```json
+{
+  "status": "complete",
+  "stream_id": "capital-fm-ke",
+  "date": "2026-11-14",
+  "created_at": "2026-11-15T02:30:00Z",
+  "completed_at": "2026-11-15T02:42:00Z",
+  "timezone": "Africa/Nairobi",
+  "olaf_version": "verified-version",
+  "fingerprint_config": {},
+  "recordings": {
+    "discovered": 288,
+    "downloaded": 288,
+    "indexed": 288,
+    "failed": 0
+  },
+  "timeline": {
+    "file": "timeline.json",
+    "version": 1,
+    "checksum": "sha256:..."
+  },
+  "index": {
+    "format": "lmdb",
+    "files": [
+      "data.mdb",
+      "lock.mdb"
+    ]
+  }
+}
+```
+
+The metadata must identify the index, its timeline, and the fingerprinting configuration used to build it.
+
+Use actual Olaf version and configuration values.
+
+---
+
+# 10. Concurrency and Resource Management
+
+Provide configurable limits for:
+
+- Maximum active daily jobs.
+- Concurrent downloads per job.
+- Olaf threads per job.
+- Concurrent uploads per job.
+- Retry attempts.
+- Retry delay.
+- Job timeout.
+
+Use a bounded worker pool.
+
+Do not start hundreds of simultaneous Olaf processes simply because hundreds of jobs are queued.
+
+Each active daily job must have an isolated workspace.
+
+Collect real CPU, memory, disk, and throughput statistics where available.
+
+Apply configuration changes safely without abruptly interrupting active jobs.
+
+---
+
+# 11. SQLite Database Design
+
+Use SQLite as the durable application database.
+
+## 11.1 `jobs`
+
+Suggested fields:
+
+- id
+- stream_id
+- date
+- status
+- stage
+- source
+- force
+- progress
+- recordings_total
+- recordings_downloaded
+- recordings_indexed
+- error
+- created_at
+- started_at
+- completed_at
+- updated_at
+
+Enforce appropriate uniqueness and lookup indexes.
+
+## 11.2 `job_attempts`
+
+- id
+- job_id
+- attempt_number
+- status
+- started_at
+- completed_at
+- error
+- workspace_path
+
+## 11.3 `job_logs`
+
+- id
+- job_id
+- level
+- stage
+- message
+- created_at
+
+## 11.4 `discovery_config`
+
+- id
+- enabled
+- config_json
+- updated_at
+
+## 11.5 `discovery_runs`
+
+- id
+- started_at
+- completed_at
+- status
+- streams_examined
+- dates_examined
+- eligible_dates
+- jobs_created
+- jobs_skipped
+- errors
+
+## 11.6 `storage_configs`
+
+- id
+- name
+- role
+- endpoint
+- bucket
+- region
+- access_key
+- secret_key
+- prefix
+- path_style
+- updated_at
+
+Protect credentials and never return secret values through normal API responses.
+
+## 11.7 `app_settings`
+
+- key
+- value
+- updated_at
+
+Use this for non-secret runtime settings.
+
+The stream timeline itself belongs with the daily index in object storage. SQLite only needs job-level summary information and processing state, not a second permanent copy of every timeline.
+
+---
+
+# 12. Backend Structure
+
+Keep the Go application small.
+
+```text
+olaf-indexer/
+├── main.go
+├── jobs.go
+├── discovery.go
+├── timeline.go
+├── storage.go
+├── api.go
+├── database.go
+├── go.mod
+├── web/
+│   ├── package.json
+│   └── src/
+│       └── App.tsx
+└── migrations/
+    └── 001_initial.sql
+```
+
+### Responsibilities
+
+**main.go**
+- Load configuration.
+- Initialize SQLite and storage.
+- Start workers and discovery.
+- Start HTTP server.
+- Handle shutdown.
+
+**jobs.go**
+- Job creation and deduplication.
+- Queue and worker management.
+- Processing lifecycle.
+- Retry and cancellation.
+
+**discovery.go**
+- Discovery configuration.
+- Scheduled scans.
+- Readiness checks.
+- Automatic enqueueing.
+- Discovery history.
+
+**timeline.go**
+- Recording inventory.
+- Timestamp extraction.
+- Duration handling.
+- Logical timeline construction.
+- Gap and overlap detection.
+- Olaf reference mapping.
+- Timeline validation and serialization.
+
+**storage.go**
+- S3-compatible clients.
+- Object listing.
+- Downloads and uploads.
+- Object metadata.
+
+**api.go**
+- REST API.
+- Request validation.
+- Response serialization.
+- OpenAPI and Swagger UI.
+
+**database.go**
+- SQLite initialization.
+- Migrations.
+- Transactions and queries.
+
+**App.tsx**
+- Main web application.
+- Navigation tabs.
+- Tables, forms, drawers, and dialogs.
+
+Avoid unnecessary package fragmentation.
+
+---
+
+# 13. REST API
+
+All routes should use consistent JSON responses.
+
+## 13.1 Jobs
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/jobs` | Create job |
+| GET | `/api/jobs` | List jobs |
+| GET | `/api/jobs/{id}` | Job details |
+| POST | `/api/jobs/{id}/retry` | Retry job |
+| POST | `/api/jobs/{id}/cancel` | Cancel job |
+
+## 13.2 Timeline
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/api/jobs/{id}/timeline` | Get timeline for a job |
+| GET | `/api/jobs/{id}/timeline/summary` | Get timeline summary |
+
+The timeline endpoint should return the generated timeline for the job, including gaps, overlaps, and recording mappings.
+
+For large timelines, support pagination or a summary/detail option.
+
+Do not make the browser download the full timeline merely to display a summary.
+
+## 13.3 Discovery
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/api/discovery/config` | Get configuration |
+| PUT | `/api/discovery/config` | Update configuration |
+| POST | `/api/discovery/run` | Run discovery |
+| GET | `/api/discovery/runs` | List scan history |
+| GET | `/api/discovery/runs/{id}` | Scan details |
+
+## 13.4 Recorder events
+
+`POST /api/events/recording-complete`
+
+## 13.5 Statistics and health
+
+| Method | Endpoint |
+|---|---|
+| GET | `/api/stats` |
+| GET | `/api/logs` |
+| GET | `/api/health` |
+| GET | `/api/health/ready` |
+
+## 13.6 Storage configuration
+
+| Method | Endpoint |
+|---|---|
+| GET | `/api/storage` |
+| POST | `/api/storage` |
+| PUT | `/api/storage/{id}` |
+| POST | `/api/storage/{id}/test` |
+
+## 13.7 API documentation
+
+- `/openapi.json`
+- `/docs`
+
+Maintain an OpenAPI 3.x specification and Swagger UI.
+
+---
+
+# 14. Web UI
+
+## 14.1 Design direction
+
+Use the actual `azure-devops-ui` package.
+
+The interface must be:
+
+- Professional and minimal.
+- Light theme.
+- Boxed layout.
+- No sidebar.
+- Horizontal navigation tabs.
+- Compact tables.
+- Subtle borders.
+- Right-side detail drawers.
+- Dialogs for short forms.
+- Small, clear status indicators.
+
+Avoid gradients, oversized cards, excessive rounding, and decorative charts.
+
+## 14.2 Main navigation
+
+```text
+Overview | Jobs | Discovery | Logs | API | Settings
+```
+
+## 14.3 Overview
+
+Display:
+
+- Service status.
+- Worker status.
+- Discovery status.
+- Storage connection status.
+- Queued, active, completed, and failed jobs.
+- Recent jobs.
+- Latest discovery run.
+- Timeline processing summary.
+
+## 14.4 Jobs
+
+Use an Azure DevOps-style table.
+
+Columns:
+
+| Column | Description |
+|---|---|
+| Stream | Stream ID |
+| Date | Recording date |
+| Status | Job status |
+| Stage | Processing stage |
+| Recordings | Indexed / total |
+| Gaps | Number of detected gaps |
+| Overlaps | Number of detected overlaps |
+| Progress | Overall progress |
+| Duration | Processing duration |
+| Source | Initiation source |
+| Created | Creation time |
+
+Clicking a row opens a right-side drawer.
+
+### Job details drawer
+
+Use tabs within the drawer:
+
+**Overview**
+- Job information.
+- Status.
+- Current stage.
+- Attempts.
+- Errors.
+- Processing duration.
+
+**Timeline**
+- Timeline origin and timezone.
+- Total timeline duration.
+- Recorded duration.
+- Missing duration.
+- Recording count.
+- Gap count.
+- Overlap count.
+- Chronological recording inventory.
+
+**Logs**
+- Job logs.
+- Olaf stdout/stderr.
+- Errors.
+
+The timeline view should provide a chronological table with:
+
+- Start time.
+- End time.
+- Duration.
+- Recording object.
+- Timeline start/end offsets.
+- Status.
+
+Gaps should appear as explicit entries, not disappear from the table.
+
+A simple horizontal timeline visualization may be added if it remains compact and useful. The chronological table is the authoritative UI representation.
+
+## 14.5 Discovery
+
+Provide configuration controls for:
+
+- Enable/disable.
+- Scan interval.
+- Source storage.
+- Stream scope.
+- Date scope.
+- Lookback days.
+- Readiness strategy.
+- Grace period.
+- Minimum recordings.
+- Minimum duration.
+- Maximum jobs per scan.
+- Dry run.
+
+Display recent discovery runs and their results.
+
+## 14.6 Logs
+
+Provide search and filters for:
+
+- Log level.
+- Job.
+- Stage.
+- Date.
+
+Use pagination.
+
+## 14.7 API
+
+Show Swagger UI or a link to `/docs`.
+
+## 14.8 Settings
+
+Provide sections for:
+
+- Source and destination storage.
+- Worker concurrency.
+- Olaf configuration.
+- Retry policy.
+- Workspace and cleanup.
+- Logging and retention.
+
+Mask credentials.
+
+## 14.9 UI implementation rules
+
+- Use `azure-devops-ui` components wherever suitable.
+- Use its tables, tabs, panels, dialogs, and status controls.
+- Keep the initial frontend simple.
+- Use API calls for persisted data.
+- Show loading, empty, success, and error states.
+- Refresh active jobs periodically or use server-sent events if simple.
+- Do not store operational state only in browser memory.
+
+---
+
+# 15. Configuration Management
+
+Separate deployment configuration from runtime configuration.
+
+## Deployment configuration
+
+Examples:
+
+- HTTP listen address.
+- SQLite database path.
+- Workspace directory.
+- Olaf executable path.
+- Authentication secrets.
+- Logging configuration.
+
+## Runtime configuration
+
+Managed through the UI and stored in SQLite:
+
+- Source storage.
+- Destination storage.
+- Discovery configuration.
+- Worker concurrency.
+- Retry settings.
+- Cleanup settings.
+
+Validate all runtime configuration before saving.
+
+Do not expose secrets through API responses.
+
+---
+
+# 16. Scheduler and Worker Behaviour
+
+The scheduler must:
+
+- Claim queued jobs atomically.
+- Respect concurrency limits.
+- Start daily job processing.
+- Detect stale jobs.
+- Recover interrupted jobs.
+- Respect cancellation requests.
+
+On startup, recover interrupted jobs by starting a clean attempt where safe.
+
+Preserve previous attempt logs.
+
+Use worker leases or equivalent ownership checks so that two workers cannot claim the same job.
+
+Run Olaf as a child process with captured output, safe arguments, cancellation support, and recorded exit codes.
+
+---
+
+# 17. Error Handling
+
+Categorize errors:
+
+| Category | Examples |
+|---|---|
+| Storage | Authentication, network, missing object |
+| Download | Partial or corrupt file |
+| Audio | Unsupported format, invalid file |
+| Timeline | Invalid timestamp, inconsistent duration |
+| Olaf | Process failure, configuration error |
+| Index | Missing or corrupt LMDB |
+| Mapping | Missing or invalid Olaf resource mapping |
+| Upload | Permission, timeout, incomplete publication |
+| System | Disk full, memory pressure, restart |
+
+Retry transient failures with exponential backoff.
+
+Do not retry permanent failures indefinitely.
+
+Do not mark an index completed if timeline validation or reference mapping fails.
+
+---
+
+# 18. Security
+
+- Protect administrative endpoints.
+- Authenticate recorder events.
+- Never expose storage credentials.
+- Validate all input.
+- Prevent path traversal.
+- Avoid shell command interpolation.
+- Use HTTPS in production.
+- Restrict access to SQLite and workspace directories.
+- Do not allow browser access to Olaf or S3 directly.
+
+---
+
+# 19. Deployment
+
+Suggested Linux paths:
+
+```text
+/opt/olaf-indexer/
+    olaf-indexer
+
+/etc/olaf-indexer/
+    config.env
+
+/var/lib/olaf-indexer/
+    indexer.db
+    jobs/
+
+/var/log/olaf-indexer/
+    application.log
+```
+
+Run as a dedicated service account under systemd.
+
+On startup:
+
+1. Load configuration.
+2. Verify Olaf availability.
+3. Initialize SQLite.
+4. Apply migrations.
+5. Initialize storage clients.
+6. Recover interrupted jobs.
+7. Start workers.
+8. Start discovery.
+9. Start HTTP server.
+
+On shutdown:
+
+1. Stop accepting new work.
+2. Stop new job claims.
+3. Stop discovery scans.
+4. Allow active jobs a configurable grace period.
+5. Cancel remaining jobs safely.
+6. Persist state.
+7. Close dependencies.
+
+---
+
+# 20. Implementation Phases
+
+## Phase 1: Foundation
+
+- Go application.
+- SQLite and migrations.
+- Deployment configuration.
+- Independent source/destination storage.
+- Health endpoints.
+
+## Phase 2: Job queue
+
+- Job creation.
+- Deduplication.
+- Worker claiming.
+- Retry and cancellation.
+- Logs and job history.
+
+## Phase 3: Stream timeline
+
+- Recording object discovery.
+- Timestamp parsing.
+- Actual duration probing.
+- Chronological ordering.
+- Logical timeline positions.
+- Gap and overlap detection.
+- Timeline JSON generation.
+- Timeline validation.
+- Timeline API and job details UI.
+
+**Acceptance criterion:** Given a set of timestamped recording chunks, the application produces a correct chronological timeline with explicit gaps and overlaps.
+
+## Phase 4: Olaf processing
+
+- Verify Olaf CLI and configuration.
+- Verify isolated cache workflow.
+- Verify stable resource IDs.
+- Build one daily LMDB per job.
+- Validate index.
+- Validate reference mapping.
+- Publish index and timeline.
+
+**Acceptance criterion:** One stream/date job produces a valid daily LMDB and a timeline that can translate Olaf match positions into exact recording timestamps.
+
+## Phase 5: Automatic discovery
+
+- Discovery configuration.
+- Scheduled scanning.
+- Readiness checks.
+- Deduplication.
+- Automatic enqueue.
+- Scan history.
+- Manual scan endpoint.
+
+**Acceptance criterion:** Eligible recording dates are discovered and enqueued without duplicate jobs.
+
+## Phase 6: Web UI
+
+Implement:
+
+- Overview.
+- Jobs.
+- Discovery.
+- Logs.
+- API.
+- Settings.
+
+Use the Azure DevOps design language and no sidebar.
+
+**Acceptance criterion:** Operators can manage jobs, inspect timelines, configure automatic discovery, and monitor processing through the web interface.
+
+## Phase 7: Reliability
+
+- Bounded concurrency.
+- Job recovery.
+- Retry/backoff.
+- Cancellation.
+- Safe publication.
+- Disk-space checks.
+- Graceful shutdown.
+
+## Phase 8: Deployment
+
+- Build frontend assets.
+- Package the Go binary.
+- Create systemd service.
+- Document installation.
+- Document configuration and recovery.
+
+---
+
+# 21. Testing Requirements
+
+## Timeline tests
+
+- Chronologically ordered chunks.
+- Out-of-order object listing.
+- Missing five-minute chunk.
+- Multiple consecutive missing chunks.
+- Variable chunk duration.
+- Overlapping recordings.
+- Duplicate timestamps.
+- Invalid filename timestamp.
+- Filename timestamp versus actual media duration.
+- Recording crossing midnight.
+- Timezone conversion.
+- Empty recording date.
+- Failed download.
+- Failed audio inspection.
+- Missing Olaf resource mapping.
+- Incorrect timeline offset.
+- Timeline checksum mismatch.
+
+## Job tests
+
+- Manual job.
+- API job.
+- Recorder event.
+- Duplicate submission.
+- Forced rebuild.
+- Retry.
+- Cancellation.
+- Restart recovery.
+
+## Discovery tests
+
+- Multiple streams.
+- Multiple dates.
+- Completed index detection.
+- Active job detection.
+- Grace period.
+- Completion event.
+- Dry run.
+- Configuration update without restart.
+- Scan overlap prevention.
+
+## Storage tests
+
+- Same source and destination bucket.
+- Different buckets.
+- Different credentials.
+- Different endpoints.
+- Authentication failure.
+- Interrupted download.
+- Interrupted upload.
+
+## Olaf tests
+
+- Successful cache.
+- Successful daily LMDB build.
+- Invalid audio.
+- Process failure.
+- Isolated concurrent job caches.
+- Stable resource IDs.
+- Query result timestamp mapping.
+- Database validation.
+
+## Publication tests
+
+- Successful LMDB upload.
+- Successful timeline upload.
+- Metadata uploaded last.
+- Failure during upload.
+- Forced rebuild failure.
+- Previous completed index remains available.
+
+## UI tests
+
+- Create and inspect jobs.
+- Inspect timeline.
+- View gaps and overlaps.
+- Configure discovery.
+- Run a scan.
+- View scan history.
+- Filter logs.
+- Test storage connections.
+- View Swagger.
+
+---
+
+# 22. Mandatory Implementation Constraints
+
+1. One job = one stream/date.
+2. One daily job = one daily LMDB.
+3. One daily job = one authoritative stream timeline.
+4. All chunks must be represented in chronological order.
+5. Missing intervals must be explicit.
+6. Do not silently concatenate non-adjacent recordings.
+7. Preserve actual recording durations.
+8. Preserve stable Olaf reference mappings.
+9. Do not create one database per recording chunk.
+10. Do not share cache or LMDB workspaces between daily jobs.
+11. Do not upload audio recordings.
+12. Do not delete or modify source recordings.
+13. Do not assume source and destination share credentials.
+14. Do not let the browser access Olaf or S3 directly.
+15. Do not publish incomplete indexes.
+16. Do not discard job history on retry.
+17. Discovery configuration must be editable through the web UI.
+18. Verify Olaf CLI flags and configuration keys before implementation.
+19. Do not use temporary paths as permanent resource identifiers.
+20. Use the actual `azure-devops-ui` package.
+21. Do not add a sidebar.
+22. Keep the codebase and dependencies small.
+
+---
+
+# 23. Definition of Done
+
+The application is complete when:
+
+- Operators can create daily indexing jobs manually.
+- External systems can create jobs through the API.
+- Recorders can send completion notifications.
+- Automatic discovery identifies eligible recording dates.
+- Discovery is configurable through the web interface.
+- All initiation mechanisms use one durable queue.
+- Duplicate jobs are prevented.
+- Multiple jobs run within configured resource limits.
+- Each daily job has an isolated Olaf workspace.
+- All chunks are processed into one daily LMDB.
+- Each daily job has a complete chronological stream timeline.
+- Gaps and overlaps are preserved explicitly.
+- Exact occurrence timestamps can be reconstructed from Olaf matches.
+- The daily index and timeline are safely published.
+- Source recordings remain untouched.
+- Job, attempt, discovery, and log history are retained.
+- The UI follows Azure DevOps conventions without a sidebar.
+- Swagger documents the API.
+- The application runs as a standalone Linux systemd service.
+
+**Final architectural objective:** one small Go application, one SQLite database, one shared job queue, one configurable discovery engine, one isolated daily indexing workflow per stream/date, one daily LMDB, and one authoritative stream timeline per index.
