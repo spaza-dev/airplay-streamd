@@ -70,7 +70,7 @@ func defaultConfig() Config {
 	return Config{
 		Server:   ServerConfig{Listen: "127.0.0.1:8788", ShutdownGraceSeconds: 30},
 		Database: DatabaseConfig{Path: "/var/lib/indexer/indexer.db", Workspace: "/var/lib/indexer/jobs"},
-		Olaf:     OlafConfig{Binary: "/usr/local/bin/olaf", Threads: 4, TimeoutMinutes: 240},
+		Olaf:     OlafConfig{Binary: "/usr/local/bin/olaf", Threads: 2, TimeoutMinutes: 240},
 		FFprobe:  FFprobeConfig{Binary: "/usr/bin/ffprobe", TimeoutSeconds: 60},
 		Workers: WorkersConfig{
 			MaxActiveJobs: 1, DownloadsPerJob: 4, UploadsPerJob: 4,

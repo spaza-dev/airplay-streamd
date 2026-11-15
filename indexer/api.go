@@ -201,7 +201,8 @@ func (a *App) handleGetJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	attempts, _ := a.db.Attempts(r.Context(), id)
-	writeJSON(w, http.StatusOK, map[string]any{"job": job, "attempts": attempts})
+	stages, _ := a.db.JobStages(r.Context(), id)
+	writeJSON(w, http.StatusOK, map[string]any{"job": job, "attempts": attempts, "stages": stages})
 }
 
 func (a *App) handleRetryJob(w http.ResponseWriter, r *http.Request) {

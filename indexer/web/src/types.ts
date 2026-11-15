@@ -91,11 +91,18 @@ export interface TimelineSummaryResponse {
 }
 
 export interface LogEntry {
-  time: string;
+  time?: string;
+  created_at?: string;
   level: string;
   message: string;
   job_id?: number;
   stage?: string;
+}
+
+export interface JobStage {
+  stage: string;
+  message: string;
+  created_at: string;
 }
 
 export interface Stats {
@@ -172,4 +179,5 @@ export interface RuntimeSettings {
 export interface JobDetailResponse {
   job: Job;
   attempts: Array<Record<string, unknown>>;
+  stages?: JobStage[];
 }

@@ -12,6 +12,7 @@ import {
   DiscoveryRun,
   Gap,
   Job,
+  JobStage,
   LogEntry,
   Recording,
   RuntimeSettings,
@@ -168,6 +169,7 @@ export function App() {
   const [summary, setSummary] = React.useState<TimelineSummary>({});
   const [timeline, setTimeline] = React.useState<Timeline | null>(null);
   const [jobLogs, setJobLogs] = React.useState<LogEntry[]>([]);
+  const [jobStages, setJobStages] = React.useState<JobStage[]>([]);
 
   const [discovery, setDiscovery] = React.useState<DiscoveryConfig | null>(null);
   const [runs, setRuns] = React.useState<DiscoveryRun[]>([]);
@@ -298,6 +300,7 @@ export function App() {
       const detail = await api.job(id);
       setSelectedJob(detail.job);
       setAttempts(detail.attempts || []);
+      setJobStages(detail.stages || []);
       setSummary(parseSummary(detail.job));
       api
         .timelineSummary(id)
@@ -344,6 +347,7 @@ export function App() {
     setSelectedJobId(job.id);
     setSelectedJob(job);
     setTimeline(null);
+    setJobStages([]);
     setPanelTab("overview");
     setPanelMode("job");
   };
@@ -1101,6 +1105,10 @@ export function App() {
                   <span className="idx-error-text">{selectedJob.error}</span>
                 </Definition>
               ) : null}
+              <div className="idx-stage-section">
+                <div className="idx-card-title">Processing stages</div>
+                <StagePipeline job={selectedJob} stages={jobStages} />
+              </div>
               <div className="idx-summary-grid">
                 <Metric label="Indexed" value={summary.recordings_indexed || 0} tone="success" />
                 <Metric label="Failed" value={summary.recordings_failed || 0} tone="error" />
@@ -1368,6 +1376,35 @@ function JobTable(props: { jobs: Job[]; onOpen: (job: Job) => void }) {
   );
 }
 
+const STAGE_SEQUENCE = ["download", "probe", "cache", "store", "validate", "upload", "completed"];
+
+function StagePipeline(props: { job: Job; stages: JobStage[] }) {
+  const latest = new Map<string, JobStage>();
+  for (const event of props.stages) {
+    latest.set(event.stage, event);
+  }
+  const completed = props.job.status === "completed";
+  const currentIndex = STAGE_SEQUENCE.indexOf(props.job.stage);
+  return (
+    <div className="idx-stage-pipeline">
+      {STAGE_SEQUENCE.map((stage, index) => {
+        const event = latest.get(stage);
+        const active =
+          !completed && props.job.status !== "queued" && props.job.status !== "cancelled" && index === currentIndex;
+        const done = completed || (event !== undefined && !active);
+        const state = done ? "done" : active ? "active" : "pending";
+        return (
+          <div className={`idx-stage ${state}`} key={stage} title={event ? event.message : undefined}>
+            <span className="idx-stage-dot" />
+            <span className="idx-stage-name">{stage}</span>
+            {event ? <span className="idx-stage-time">{formatTime(event.created_at)}</span> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function LogList(props: { entries: LogEntry[]; empty: string }) {
   if (props.entries.length === 0) {
     return <div className="idx-empty">{props.empty}</div>;
@@ -1375,8 +1412,8 @@ function LogList(props: { entries: LogEntry[]; empty: string }) {
   return (
     <div className="idx-log-list">
       {props.entries.map((entry, index) => (
-        <div className={`idx-log-entry level-${entry.level}`} key={`${entry.time}-${index}`}>
-          <span className="idx-log-time">{formatTime(entry.time)}</span>
+        <div className={`idx-log-entry level-${entry.level}`} key={`${entry.time || entry.created_at}-${index}`}>
+          <span className="idx-log-time">{formatTime(entry.time || entry.created_at)}</span>
           <span className="idx-log-level">{entry.level}</span>
           {entry.job_id ? <span className="idx-log-job">#{entry.job_id}</span> : null}
           {entry.stage ? <span className="idx-log-stage">{entry.stage}</span> : null}

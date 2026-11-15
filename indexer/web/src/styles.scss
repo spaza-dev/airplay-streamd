@@ -491,6 +491,69 @@ code {
   white-space: pre-wrap;
 }
 
+.idx-stage-section {
+  margin-top: 18px;
+}
+
+.idx-stage-section .idx-card-title {
+  margin-bottom: 10px;
+}
+
+.idx-stage-pipeline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.idx-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid $border;
+  border-radius: 3px;
+  background: #fafbfc;
+  color: $muted;
+  font-size: 12px;
+}
+
+.idx-stage-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #c8cdd3;
+}
+
+.idx-stage.done {
+  border-color: #cfe8cf;
+  background: #f3faf3;
+  color: $success;
+}
+
+.idx-stage.done .idx-stage-dot {
+  background: $success;
+}
+
+.idx-stage.active {
+  border-color: #b7d7f2;
+  background: #f1f7fd;
+  color: $accent;
+}
+
+.idx-stage.active .idx-stage-dot {
+  background: $accent;
+}
+
+.idx-stage-name {
+  text-transform: capitalize;
+  font-weight: 600;
+}
+
+.idx-stage-time {
+  color: $muted;
+  font-weight: 400;
+}
+
 .idx-summary-grid {
   margin-top: 18px;
 }

@@ -215,8 +215,10 @@ func (d *DB) FinishJob(ctx context.Context, id int64, status, errMsg string) err
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
 	now := utcNow()
-	_, err := d.db.ExecContext(ctx, `UPDATE jobs SET status = ?, stage = ?, error = ?,
-		completed_at = ?, updated_at = ? WHERE id = ?`, status, status, errMsg, now, now, id)
+	_, err := d.db.ExecContext(ctx, `UPDATE jobs SET status = ?, stage = ?,
+		progress = CASE WHEN ? = 'completed' THEN 1 ELSE progress END,
+		error = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
+		status, status, status, errMsg, now, now, id)
 	return err
 }
 
@@ -342,6 +344,33 @@ func (d *DB) Attempts(ctx context.Context, jobID int64) ([]map[string]any, error
 			"id": id, "attempt_number": attempt, "status": status, "started_at": started,
 			"completed_at": completed.String, "error": errMsg, "workspace_path": workspace,
 		})
+	}
+	return out, rows.Err()
+}
+
+type JobStage struct {
+	Stage     string    `json:"stage"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (d *DB) JobStages(ctx context.Context, jobID int64) ([]JobStage, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT stage, message, created_at FROM job_logs
+		WHERE job_id = ? AND message LIKE 'stage=%'
+		ORDER BY id ASC`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]JobStage, 0)
+	for rows.Next() {
+		var stage JobStage
+		var createdAt string
+		if err := rows.Scan(&stage.Stage, &stage.Message, &createdAt); err != nil {
+			return nil, err
+		}
+		stage.CreatedAt = parseDBTime(createdAt)
+		out = append(out, stage)
 	}
 	return out, rows.Err()
 }
@@ -610,6 +639,11 @@ func (m *JobManager) runJob(ctx context.Context, job *Job) {
 	}
 	_ = os.RemoveAll(workspace)
 	if err := os.MkdirAll(workspace, 0o750); err != nil {
+		_ = m.app.db.FinishJob(ctx, job.ID, "failed", err.Error())
+		_ = m.app.db.finishAttempt(attemptID, "failed", err.Error())
+		return
+	}
+	if err := m.setStage(ctx, job, "downloading", "download", 0); err != nil {
 		_ = m.app.db.FinishJob(ctx, job.ID, "failed", err.Error())
 		_ = m.app.db.finishAttempt(attemptID, "failed", err.Error())
 		return

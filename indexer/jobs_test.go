@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -78,5 +80,67 @@ func TestBuildCompletionMetaIncludesArtifactPaths(t *testing.T) {
 	sizes, ok := indexMeta["sizes_bytes"].(map[string]int64)
 	if !ok || sizes["data.mdb"] != 456 {
 		t.Fatalf("index sizes = %#v", indexMeta["sizes_bytes"])
+	}
+}
+
+func TestFinishJobCompletedSetsFullProgress(t *testing.T) {
+	db, err := OpenDB(filepath.Join(t.TempDir(), "indexer.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	job, _, err := db.CreateJob(ctx, "test-stream", "2026-11-14", "test", false)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	claimed, err := db.ClaimNextJob(ctx)
+	if err != nil || claimed == nil {
+		t.Fatalf("claim job: %v", err)
+	}
+	if err := db.UpdateJob(ctx, claimed.ID, "uploading", "upload", 0.9, ""); err != nil {
+		t.Fatalf("update job: %v", err)
+	}
+	if err := db.FinishJob(ctx, claimed.ID, "completed", ""); err != nil {
+		t.Fatalf("finish job: %v", err)
+	}
+	got, err := db.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got.Progress != 1 {
+		t.Fatalf("progress = %v, want 1", got.Progress)
+	}
+	if got.Stage != "completed" {
+		t.Fatalf("stage = %q, want completed", got.Stage)
+	}
+	if got.CompletedAt == nil {
+		t.Fatal("completed_at is nil")
+	}
+}
+
+func TestJobStagesReturnsStageTransitions(t *testing.T) {
+	db, err := OpenDB(filepath.Join(t.TempDir(), "indexer.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	job, _, err := db.CreateJob(ctx, "test-stream", "2026-11-14", "test", false)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	db.AddJobLog(job.ID, "info", "download", "stage=download progress=0%")
+	db.AddJobLog(job.ID, "info", "validate", "stream=test-stream date=2026-11-14")
+	db.AddJobLog(job.ID, "info", "cache", "stage=cache progress=40%")
+	stages, err := db.JobStages(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("job stages: %v", err)
+	}
+	if len(stages) != 2 {
+		t.Fatalf("stages = %d, want 2", len(stages))
+	}
+	if stages[0].Stage != "download" || stages[1].Stage != "cache" {
+		t.Fatalf("unexpected stage order: %#v", stages)
 	}
 }

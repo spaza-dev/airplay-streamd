@@ -208,7 +208,7 @@ database:
 
 olaf:
   binary: "/usr/local/bin/olaf"
-  threads: 4
+  threads: 2
   timeout_minutes: 240
 
 ffprobe:
