@@ -203,11 +203,18 @@ spaza-recordings/
     │       └── ...
     ├── indexes/
     │   └── YYYY/MM/DD/
-    │       ├── data.mdb
-    │       ├── lock.mdb
-    │       └── meta.json
+    │       ├── meta.json
+    │       └── builds/
+    │           └── {build_id}/
+    │               ├── data.mdb
+    │               ├── lock.mdb
+    │               └── timeline.json
     └── transcripts/
 ```
+
+The date-level `meta.json` is the completion pointer. It is uploaded last and references
+one immutable build under `builds/{build_id}/`. The LMDB files and timeline for a build
+must always remain together.
 
 The destination may be the same bucket as the source or a different bucket.
 
@@ -226,12 +233,17 @@ Do not assume shared credentials or storage infrastructure.
 
 Publish in this order:
 
-1. Upload the LMDB database files.
-2. Verify successful uploads.
-3. Upload timeline and required supporting metadata.
-4. Upload `meta.json` last.
-5. Set `status` to `complete`.
-6. Mark the job completed in SQLite.
+1. Upload the LMDB database files to `builds/{build_id}/`.
+2. Upload `timeline.json` to the same build directory.
+3. Verify successful uploads, including the timeline checksum.
+4. Generate and upload the date-level `meta.json` last.
+5. Verify the uploaded completion metadata.
+6. Set `status` to `complete`.
+7. Mark the job completed in SQLite.
+
+`meta.json` must include explicit bucket-relative object keys for itself, the build
+directory, and every build artifact. The legacy `build_prefix` field remains relative
+to the date directory, and `timeline.file` remains relative to the build directory.
 
 A downstream reader must not consider an index complete until it finds valid completion metadata.
 
@@ -706,15 +718,16 @@ Store the authoritative timeline as a separate file:
 
 ```text
 {stream_id}/indexes/YYYY/MM/DD/
-    data.mdb
-    lock.mdb
-    timeline.json
     meta.json
+    builds/{build_id}/
+        data.mdb
+        lock.mdb
+        timeline.json
 ```
 
 `timeline.json` contains the recording inventory, logical positions, gaps, overlaps, and Olaf reference mapping.
 
-Keep `meta.json` relatively small. It should identify the timeline file, its format version, and its checksum.
+Keep `meta.json` relatively small. It must identify the timeline file, its format version, its checksum, its size, and its full bucket-relative object key.
 
 This is a required index artifact, not an optional diagnostic file.
 
@@ -901,15 +914,27 @@ On failure, retain sufficient diagnostic information for troubleshooting, subjec
 
 # 9. Index Metadata
 
-Each completed index must contain `meta.json`.
+Each completed index must publish a date-level `meta.json` at
+`{stream}/indexes/YYYY/MM/DD/meta.json`.
 
 Example:
 
 ```json
 {
+  "meta_version": 1,
   "status": "complete",
   "stream_id": "capital-fm-ke",
   "date": "2026-11-14",
+  "build_id": "20261115T115743Z-3",
+  "build_prefix": "builds/20261115T115743Z-3/",
+  "paths": {
+    "meta": "{destination-prefix}/capital-fm-ke/indexes/2026/11/14/meta.json",
+    "date": "{destination-prefix}/capital-fm-ke/indexes/2026/11/14/",
+    "build": "{destination-prefix}/capital-fm-ke/indexes/2026/11/14/builds/20261115T115743Z-3/",
+    "data": "{destination-prefix}/capital-fm-ke/indexes/2026/11/14/builds/20261115T115743Z-3/data.mdb",
+    "lock": "{destination-prefix}/capital-fm-ke/indexes/2026/11/14/builds/20261115T115743Z-3/lock.mdb",
+    "timeline": "{destination-prefix}/capital-fm-ke/indexes/2026/11/14/builds/20261115T115743Z-3/timeline.json"
+  },
   "created_at": "2026-11-15T02:30:00Z",
   "completed_at": "2026-11-15T02:42:00Z",
   "timezone": "Africa/Nairobi",
@@ -924,17 +949,27 @@ Example:
   "timeline": {
     "file": "timeline.json",
     "version": 1,
-    "checksum": "sha256:..."
+    "checksum": "sha256:...",
+    "size_bytes": 123456
   },
   "index": {
     "format": "lmdb",
     "files": [
       "data.mdb",
       "lock.mdb"
-    ]
+    ],
+    "sizes_bytes": {
+      "data.mdb": 9626000,
+      "lock.mdb": 67232
+    }
   }
 }
 ```
+
+The `paths` values are full object keys relative to the destination bucket, including
+any configured destination prefix. They do not include the bucket name. The legacy
+`build_prefix` and `timeline.file` fields remain relative to the date directory and
+build directory respectively.
 
 The metadata must identify the index, its timeline, and the fingerprinting configuration used to build it.
 

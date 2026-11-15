@@ -865,26 +865,37 @@ func (m *JobManager) processJob(ctx context.Context, job *Job, workspace string)
 	basePrefix := fmt.Sprintf("%s/indexes/%s/", job.StreamID, strings.ReplaceAll(job.Date, "-", "/"))
 	buildPrefix := basePrefix + "builds/" + buildID + "/"
 
-	files := []struct{ name, contentType string }{
-		{"data.mdb", "application/octet-stream"},
-		{"lock.mdb", "application/octet-stream"},
+	type buildFile struct {
+		name        string
+		contentType string
+		local       string
+		size        int64
+	}
+	files := []buildFile{
+		{name: "data.mdb", contentType: "application/octet-stream"},
+		{name: "lock.mdb", contentType: "application/octet-stream"},
+	}
+	indexSizes := make(map[string]int64, len(files))
+	for i := range files {
+		files[i].local = filepath.Join(workspace, "index", files[i].name)
+		info, err := os.Stat(files[i].local)
+		if err != nil {
+			return nil, fmt.Errorf("required index file %s: %w", files[i].name, err)
+		}
+		files[i].size = info.Size()
+		indexSizes[files[i].name] = info.Size()
 	}
 	if err := runParallel(ctx, m.app.cfg.Workers.UploadsPerJob, len(files), func(ctx context.Context, index int) error {
 		file := files[index]
-		local := filepath.Join(workspace, "index", file.name)
-		info, err := os.Stat(local)
-		if err != nil {
-			return fmt.Errorf("required index file %s: %w", file.name, err)
-		}
-		if err := dest.PutFile(ctx, buildPrefix+file.name, local, file.contentType); err != nil {
+		if err := dest.PutFile(ctx, buildPrefix+file.name, file.local, file.contentType); err != nil {
 			return fmt.Errorf("upload %s: %w", file.name, err)
 		}
 		remote, err := dest.Head(ctx, buildPrefix+file.name)
 		if err != nil {
 			return fmt.Errorf("verify %s: %w", file.name, err)
 		}
-		if remote.Size != info.Size() {
-			return fmt.Errorf("verify %s: size %d != %d", file.name, remote.Size, info.Size())
+		if remote.Size != file.size {
+			return fmt.Errorf("verify %s: size %d != %d", file.name, remote.Size, file.size)
 		}
 		return nil
 	}); err != nil {
@@ -912,36 +923,39 @@ func (m *JobManager) processJob(ctx context.Context, job *Job, workspace string)
 		return nil, fmt.Errorf("verify timeline checksum: uploaded file does not match")
 	}
 
-	metaDoc := map[string]any{
-		"status":       "complete",
-		"stream_id":    job.StreamID,
-		"date":         job.Date,
-		"timezone":     tzName,
-		"build_id":     buildID,
-		"build_prefix": "builds/" + buildID + "/",
-		"created_at":   job.CreatedAt.UTC().Format(time.RFC3339),
-		"completed_at": time.Now().UTC().Format(time.RFC3339),
-		"olaf_version": m.app.olafVersion,
-		"fingerprint_config": map[string]any{
-			"threads":                       m.app.cfg.Olaf.Threads,
-			"skip_duplicates":               true,
-			"allowed_audio_file_extensions": supportedExtensionList(),
-		},
-		"recordings": map[string]any{
-			"discovered": timeline.Summary.RecordingsDiscovered,
-			"downloaded": len(timeline.Recordings),
-			"indexed":    timeline.Summary.RecordingsIndexed,
-			"failed":     timeline.Summary.RecordingsFailed,
-		},
-		"timeline": map[string]any{"file": "timeline.json", "version": timeline.Version, "checksum": checksum},
-		"index":    map[string]any{"format": "lmdb", "files": []string{"data.mdb", "lock.mdb"}},
-	}
+	metaDoc := buildCompletionMeta(completionMetaInput{
+		Job:              job,
+		Timezone:         tzName,
+		BuildID:          buildID,
+		Timeline:         timeline,
+		TimelineChecksum: checksum,
+		TimelineSize:     timelineInfo.Size(),
+		IndexSizes:       indexSizes,
+		Paths:            buildArtifactPaths(dest, basePrefix, buildID),
+		OlafVersion:      m.app.olafVersion,
+		OlafThreads:      m.app.cfg.Olaf.Threads,
+		CompletedAt:      time.Now().UTC(),
+	})
 	metaBytes, err := json.MarshalIndent(metaDoc, "", "  ")
 	if err != nil {
 		return nil, err
 	}
 	if err := dest.PutBytes(ctx, basePrefix+"meta.json", metaBytes, "application/json"); err != nil {
 		return nil, fmt.Errorf("upload completion metadata: %w", err)
+	}
+	remoteMeta, err := dest.Head(ctx, basePrefix+"meta.json")
+	if err != nil {
+		return nil, fmt.Errorf("verify completion metadata: %w", err)
+	}
+	if remoteMeta.Size != int64(len(metaBytes)) {
+		return nil, fmt.Errorf("verify completion metadata: size %d != %d", remoteMeta.Size, len(metaBytes))
+	}
+	remoteMetaData, err := dest.GetBytes(ctx, basePrefix+"meta.json", 8<<20)
+	if err != nil {
+		return nil, fmt.Errorf("verify completion metadata checksum: %w", err)
+	}
+	if ChecksumBytes(remoteMetaData) != ChecksumBytes(metaBytes) {
+		return nil, fmt.Errorf("verify completion metadata checksum: uploaded file does not match")
 	}
 	if err := retainBuilds(ctx, dest, basePrefix, buildID, settings.BuildsRetained); err != nil {
 		m.logJob(job.ID, "warn", "cleanup", "retain old builds: %v", err)
@@ -954,6 +968,70 @@ func (m *JobManager) processJob(ctx context.Context, job *Job, workspace string)
 		SummaryJSON: string(summaryJSON), Discovered: len(timeline.Recordings),
 		Downloaded: len(timeline.Recordings), Indexed: timeline.Summary.RecordingsIndexed,
 	}, nil
+}
+
+type completionMetaInput struct {
+	Job              *Job
+	Timezone         string
+	BuildID          string
+	Timeline         *Timeline
+	TimelineChecksum string
+	TimelineSize     int64
+	IndexSizes       map[string]int64
+	Paths            map[string]string
+	OlafVersion      string
+	OlafThreads      int
+	CompletedAt      time.Time
+}
+
+func buildCompletionMeta(in completionMetaInput) map[string]any {
+	return map[string]any{
+		"meta_version": 1,
+		"status":       "complete",
+		"stream_id":    in.Job.StreamID,
+		"date":         in.Job.Date,
+		"timezone":     in.Timezone,
+		"build_id":     in.BuildID,
+		"build_prefix": "builds/" + in.BuildID + "/",
+		"paths":        in.Paths,
+		"created_at":   in.Job.CreatedAt.UTC().Format(time.RFC3339),
+		"completed_at": in.CompletedAt.UTC().Format(time.RFC3339),
+		"olaf_version": in.OlafVersion,
+		"fingerprint_config": map[string]any{
+			"threads":                       in.OlafThreads,
+			"skip_duplicates":               true,
+			"allowed_audio_file_extensions": supportedExtensionList(),
+		},
+		"recordings": map[string]any{
+			"discovered": in.Timeline.Summary.RecordingsDiscovered,
+			"downloaded": len(in.Timeline.Recordings),
+			"indexed":    in.Timeline.Summary.RecordingsIndexed,
+			"failed":     in.Timeline.Summary.RecordingsFailed,
+		},
+		"timeline": map[string]any{
+			"file":       "timeline.json",
+			"version":    in.Timeline.Version,
+			"checksum":   in.TimelineChecksum,
+			"size_bytes": in.TimelineSize,
+		},
+		"index": map[string]any{
+			"format":      "lmdb",
+			"files":       []string{"data.mdb", "lock.mdb"},
+			"sizes_bytes": in.IndexSizes,
+		},
+	}
+}
+
+func buildArtifactPaths(dest *StorageClient, basePrefix, buildID string) map[string]string {
+	buildPrefix := basePrefix + "builds/" + buildID + "/"
+	return map[string]string{
+		"meta":     dest.key(basePrefix + "meta.json"),
+		"date":     dest.key(basePrefix),
+		"build":    dest.key(buildPrefix),
+		"data":     dest.key(buildPrefix + "data.mdb"),
+		"lock":     dest.key(buildPrefix + "lock.mdb"),
+		"timeline": dest.key(buildPrefix + "timeline.json"),
+	}
 }
 
 func retainBuilds(ctx context.Context, dest *StorageClient, basePrefix, currentBuildID string, retain int) error {

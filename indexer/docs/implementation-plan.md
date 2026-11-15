@@ -21,7 +21,8 @@ API, by recorder notifications, or by automatic discovery.
 - Stream timezone is read from `{stream_id}/meta.json` at `metadata.timezone`. If it is
   absent or invalid, `default_timezone` from deployment configuration is used.
 - Forced rebuilds publish immutable `builds/{build_id}/` artifacts. The date-level
-  `meta.json` is the completion pointer and is always uploaded last.
+  `meta.json` is the completion pointer and is always uploaded last. It includes
+  bucket-relative paths for the metadata, build directory, and every build artifact.
 - S3/R2 source and destination settings are configured in `.env` (`S3_*`, with optional
   `S3_DEST_*` overrides) and applied to SQLite on every startup. The UI/API can still
   inspect them; they are overwritten at restart when `S3_BUCKET` is set.

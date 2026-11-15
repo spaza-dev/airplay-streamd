@@ -496,9 +496,12 @@ event route. Health and readiness are always unauthenticated.
 Supported audio extensions: `.ogg`, `.opus`, `.mp3`, `.m4a`, `.aac`, `.wav`, `.flac`,
 `.mp4`, `.mkv`, `.webm`, `.wv`, `.ape`, `.wma`, `.raw`.
 
-The published `meta.json` contains the build ID and prefix, recording counts, timeline
-checksum, Olaf version, and fingerprint configuration. The timeline checksum is
-verified against the uploaded file before publication completes.
+The published `meta.json` contains the build ID and prefix, explicit bucket-relative
+paths for the metadata, build directory, and every artifact, recording counts, timeline
+checksum and size, Olaf version, and fingerprint configuration. The `paths` values
+include the configured destination prefix but not the bucket name. The date-level
+metadata and timeline checksum are verified against the uploaded files before
+publication completes.
 
 ### 7.7 Local workspaces
 
