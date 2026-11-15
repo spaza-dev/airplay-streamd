@@ -11,6 +11,9 @@ SERVICE_NAME="indexer"
 BUILD=0
 NO_START=0
 BINARY=""
+OLAF_VERSION="${OLAF_VERSION:-v3.3.3}"
+OLAF_BINARY="${OLAF_BINARY:-}"
+GO_BIN=""
 ORIGINAL_ARGS=("$@")
 
 usage() {
@@ -18,8 +21,10 @@ usage() {
 usage: sudo $0 [options]
 
 Options:
-  --build              Build the binary and web assets before installing
-  --binary PATH        Install a specific binary (default: dist/indexer)
+  --build              Build the frontend and backend before installing
+  --binary PATH        Install a specific binary (default: dist/indexer or a fresh build)
+  --olaf-version TAG   Olaf release to install when missing (default: $OLAF_VERSION)
+  --olaf-binary PATH   Install a specific Olaf binary instead of downloading a release
   --prefix PATH        Install directory (default: $PREFIX)
   --config-dir PATH    Configuration directory (default: $CONFIG_DIR)
   --state-dir PATH     State/database directory (default: $STATE_DIR)
@@ -34,6 +39,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --build) BUILD=1; shift ;;
     --binary) BINARY="$2"; shift 2 ;;
+    --olaf-version) OLAF_VERSION="$2"; shift 2 ;;
+    --olaf-binary) OLAF_BINARY="$2"; shift 2 ;;
     --prefix) PREFIX="$2"; shift 2 ;;
     --config-dir) CONFIG_DIR="$2"; shift 2 ;;
     --state-dir) STATE_DIR="$2"; shift 2 ;;
@@ -53,23 +60,259 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+if ! command -v apt-get >/dev/null 2>&1 || ! command -v dpkg-query >/dev/null 2>&1; then
+  echo "unsupported distribution: this installer requires apt and dpkg" >&2
+  exit 1
+fi
+
+case "$(uname -m)" in
+  x86_64|amd64)
+    GO_ARCH="amd64"
+    NODE_ARCH="x64"
+    OLAF_ARCH="x86_64"
+    ;;
+  aarch64|arm64)
+    GO_ARCH="arm64"
+    NODE_ARCH="arm64"
+    OLAF_ARCH="aarch64"
+    ;;
+  *)
+    echo "unsupported architecture: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+version_ge() {
+  [[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" == "$2" ]]
+}
+
+install_packages() {
+  local package
+  local -a missing=()
+  for package in "$@"; do
+    if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q '^install ok installed$'; then
+      missing+=("$package")
+    fi
+  done
+  if [[ "${#missing[@]}" -eq 0 ]]; then
+    echo "==> System packages already installed"
+    return
+  fi
+  echo "==> Installing system packages: ${missing[*]}"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y --no-install-recommends "${missing[@]}"
+}
+
+install_go() {
+  local required version archive checksum install_dir tmpdir
+  required="$(awk '/^go [0-9]/{print $2; exit}' "$ROOT/go.mod")"
+
+  if command -v go >/dev/null 2>&1; then
+    GO_BIN="$(command -v go)"
+  elif [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+    local user_home
+    user_home="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+    if [[ -x "$user_home/.local/go/bin/go" ]]; then
+      GO_BIN="$user_home/.local/go/bin/go"
+    fi
+  fi
+
+  if [[ -n "$GO_BIN" ]]; then
+    version="$("$GO_BIN" version | awk '{print $3}' | sed 's/^go//')"
+    if ! version_ge "$version" "$required"; then
+      echo "Go $version is installed but $required or newer is required" >&2
+      exit 1
+    fi
+    echo "==> Go already installed: $version"
+    return
+  fi
+
+  version="$required"
+  archive="go${version}.linux-${GO_ARCH}.tar.gz"
+  echo "==> Installing Go $version"
+  checksum="$(curl -fsSL https://go.dev/dl/?mode=json | awk -v f="$archive" '
+    index($0, "\"filename\": \"" f "\"") { found=1; next }
+    found && /"sha256"/ {
+      sub(/.*"sha256": "/, "")
+      sub(/".*/, "")
+      print
+      exit
+    }
+  ')"
+  if [[ -z "$checksum" ]]; then
+    echo "could not determine the Go archive checksum" >&2
+    exit 1
+  fi
+
+  tmpdir="$(mktemp -d)"
+  curl -fsSL "https://go.dev/dl/$archive" -o "$tmpdir/$archive"
+  printf '%s  %s\n' "$checksum" "$tmpdir/$archive" | sha256sum -c - >/dev/null
+  tar -C "$tmpdir" -xzf "$tmpdir/$archive"
+  install_dir="/usr/local/lib/go-${version}"
+  rm -rf "$install_dir"
+  install -d "$(dirname "$install_dir")"
+  mv "$tmpdir/go" "$install_dir"
+  rm -rf "$tmpdir"
+  ln -sfn "$install_dir/bin/go" /usr/local/bin/go
+  ln -sfn "$install_dir/bin/gofmt" /usr/local/bin/gofmt
+  GO_BIN="/usr/local/bin/go"
+}
+
+install_node() {
+  local line version archive checksum base install_dir tmpdir node_version
+  if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+    node_version="$(node -p 'process.versions.node')"
+    if ! version_ge "$node_version" "20.19.0"; then
+      echo "Node.js $node_version is installed but 20.19.0 or newer is required" >&2
+      exit 1
+    fi
+    echo "==> Node.js already installed: $node_version"
+    return
+  fi
+
+  base="https://nodejs.org/dist/latest-v24.x"
+  line="$(curl -fsSL "$base/SHASUMS256.txt" | awk -v p="linux-${NODE_ARCH}.tar.xz$" '$2 ~ p {print; exit}')"
+  if [[ -z "$line" ]]; then
+    echo "could not locate the Node.js archive" >&2
+    exit 1
+  fi
+  checksum="$(printf '%s\n' "$line" | awk '{print $1}')"
+  archive="$(printf '%s\n' "$line" | awk '{print $2}')"
+  version="${archive#node-v}"
+  version="${version%-linux-*}"
+
+  echo "==> Installing Node.js $version"
+  tmpdir="$(mktemp -d)"
+  curl -fsSL "$base/$archive" -o "$tmpdir/$archive"
+  printf '%s  %s\n' "$checksum" "$tmpdir/$archive" | sha256sum -c - >/dev/null
+  install_dir="/usr/local/lib/node-v${version}-linux-${NODE_ARCH}"
+  rm -rf "$install_dir"
+  tar -C /usr/local/lib -xJf "$tmpdir/$archive"
+  rm -rf "$tmpdir"
+  ln -sfn "$install_dir/bin/node" /usr/local/bin/node
+  ln -sfn "$install_dir/bin/npm" /usr/local/bin/npm
+  ln -sfn "$install_dir/bin/npx" /usr/local/bin/npx
+  ln -sfn "$install_dir/bin/corepack" /usr/local/bin/corepack
+}
+
+install_olaf() {
+  local archive checksum url release_json asset info install_dir tmpdir version
+  if command -v olaf >/dev/null 2>&1; then
+    if [[ ! -e /usr/local/bin/olaf ]]; then
+      ln -s "$(command -v olaf)" /usr/local/bin/olaf
+    fi
+    if ! olaf help >/dev/null 2>&1; then
+      echo "the installed Olaf binary is not usable" >&2
+      exit 1
+    fi
+    echo "==> Olaf already installed"
+    return
+  fi
+
+  if [[ -n "$OLAF_BINARY" ]]; then
+    if [[ ! -x "$OLAF_BINARY" ]]; then
+      echo "Olaf binary not found or not executable: $OLAF_BINARY" >&2
+      exit 1
+    fi
+    echo "==> Installing Olaf from $OLAF_BINARY"
+    install -m 0755 -o root -g root "$OLAF_BINARY" /usr/local/bin/olaf
+    return
+  fi
+
+  version="${OLAF_VERSION#v}"
+  archive="olaf_cli-linux-${OLAF_ARCH}.tar.gz"
+  echo "==> Installing Olaf v$version"
+  release_json="$(curl -fsSL "https://api.github.com/repos/JorenSix/Olaf/releases/tags/v${version}")"
+  info="$(printf '%s\n' "$release_json" | awk -v n="$archive" '
+    index($0, "\"name\": \"" n "\"") { found=1 }
+    found && /"digest": "sha256:/ {
+      d=$0
+      sub(/.*sha256:/, "", d)
+      sub(/".*/, "", d)
+    }
+    found && /"browser_download_url":/ {
+      u=$0
+      sub(/.*"browser_download_url": "/, "", u)
+      sub(/".*/, "", u)
+      print d
+      print u
+      exit
+    }
+  ')"
+  checksum="$(printf '%s\n' "$info" | sed -n '1p')"
+  url="$(printf '%s\n' "$info" | sed -n '2p')"
+  if [[ -z "$checksum" || -z "$url" ]]; then
+    echo "could not resolve the Olaf v$version release asset" >&2
+    echo "use --olaf-binary PATH to install a local Olaf binary" >&2
+    exit 1
+  fi
+
+  tmpdir="$(mktemp -d)"
+  curl -fsSL "$url" -o "$tmpdir/$archive"
+  printf '%s  %s\n' "$checksum" "$tmpdir/$archive" | sha256sum -c - >/dev/null
+  tar -C "$tmpdir" -xzf "$tmpdir/$archive"
+  if [[ ! -x "$tmpdir/olaf" ]]; then
+    echo "the Olaf release archive did not contain the olaf binary" >&2
+    exit 1
+  fi
+  install -m 0755 -o root -g root "$tmpdir/olaf" /usr/local/bin/olaf
+  if [[ -f "$tmpdir/olaf_config.example.json" ]]; then
+    install -d -m 0755 /usr/local/share/olaf
+    install -m 0644 -o root -g root \
+      "$tmpdir/olaf_config.example.json" /usr/local/share/olaf/olaf_config.example.json
+  fi
+  if [[ -f "$tmpdir/olaf_config.schema.json" ]]; then
+    install -d -m 0755 /usr/local/share/olaf
+    install -m 0644 -o root -g root \
+      "$tmpdir/olaf_config.schema.json" /usr/local/share/olaf/olaf_config.schema.json
+  fi
+  rm -rf "$tmpdir"
+}
+
+run_build() {
+  echo "==> Building indexer frontend and backend"
+  local -a build_env=("PATH=$PATH" "GO=$GO_BIN")
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]] \
+    && sudo -H -u "$SUDO_USER" test -w "$ROOT"; then
+    sudo -H -u "$SUDO_USER" env "${build_env[@]}" "$ROOT/scripts/build.sh"
+  else
+    env "${build_env[@]}" "$ROOT/scripts/build.sh"
+  fi
+}
+
+echo "==> Installing system dependencies"
+install_packages ffmpeg ca-certificates tzdata curl tar xz-utils
+
+echo "==> Ensuring build environment"
+install_go
+install_node
+
+echo "==> Ensuring Olaf indexer"
+install_olaf
+
+if ! command -v ffprobe >/dev/null 2>&1; then
+  echo "ffprobe is not available after dependency installation" >&2
+  exit 1
+fi
+if ! command -v olaf >/dev/null 2>&1; then
+  echo "olaf is not available after dependency installation" >&2
+  exit 1
+fi
+
 if [[ "$BUILD" -eq 1 ]]; then
-  "$ROOT/scripts/build.sh"
+  run_build
+elif [[ -z "$BINARY" && ! -f "$ROOT/dist/indexer" ]]; then
+  run_build
 fi
 
 if [[ -z "$BINARY" ]]; then
   BINARY="$ROOT/dist/indexer"
 fi
 if [[ ! -f "$BINARY" ]]; then
-  echo "binary not found: $BINARY (run with --build or build first)" >&2
+  echo "binary not found: $BINARY" >&2
   exit 1
 fi
-
-for tool in olaf ffprobe; do
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    echo "WARNING: $tool is not on PATH; the service will fail readiness checks" >&2
-  fi
-done
 
 echo "==> Creating service user and directories"
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
@@ -131,6 +374,10 @@ Installed:
   env:     $CONFIG_DIR/.env
   state:   $STATE_DIR
   service: $SERVICE_NAME
+  olaf:    $(command -v olaf)
+  ffprobe: $(command -v ffprobe)
+  go:      $GO_BIN
+  node:    $(command -v node)
 
 Next steps:
   1. Edit $CONFIG_DIR/.env (admin/event tokens, optional S3 defaults).

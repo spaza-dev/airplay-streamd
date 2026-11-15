@@ -62,16 +62,22 @@ rebuild never invalidates a previously published build.
 
 ## 2. Requirements
 
-- Linux with systemd for the provided deployment scripts.
+- Debian or Ubuntu with systemd. The installer uses `apt` and `dpkg`.
 - Go 1.27.4 or newer to build the backend. `scripts/build.sh` prefers
   `$HOME/.local/go/bin/go`, then `go` from `PATH`.
-- Node.js 24 and npm to build the frontend.
+- Node.js 20.19 or newer to build the frontend; Node.js 24 is installed when neither
+  Node nor npm is present.
 - Olaf CLI, tested with `2026.10.19`, available at the path in `config.yaml`
   (default `/usr/local/bin/olaf`).
 - `ffprobe` at the path in `config.yaml` (default `/usr/bin/ffprobe`).
 - S3-compatible storage. Cloudflare R2, MinIO, and AWS S3 are supported through the
   AWS SDK.
 - `ffmpeg` is generally required by Olaf and by generated test audio.
+
+The installer checks for every dependency and installs only what is missing:
+`ffmpeg`/`ffprobe`, CA certificates, timezone data, `curl`, `tar`, `xz-utils`, Go,
+Node.js, and Olaf. Existing tools are left in place and validated. Olaf is installed
+from the pinned `v3.3.3` Linux release with SHA-256 verification.
 
 Check the dependencies:
 
@@ -254,24 +260,34 @@ a service restart.
 
 ## 5. Installation
 
-The installer creates a dedicated `indexer` system user and installs the binary,
-configuration, environment template, directories, and systemd unit.
+The installer installs all missing dependencies, creates a dedicated `indexer` system
+user, and installs the binary, configuration, environment template, directories, and
+systemd unit. If `dist/indexer` is missing, it builds both the frontend and backend
+automatically.
+
+```bash
+sudo ./scripts/install.sh
+```
+
+To force a fresh frontend and backend build:
 
 ```bash
 sudo ./scripts/install.sh --build
 ```
 
-If the binary was already built:
+To install an already-built binary without building:
 
 ```bash
-sudo ./scripts/install.sh
+sudo ./scripts/install.sh --binary ./dist/indexer
 ```
 
 Options:
 
 ```text
 --build              Build the frontend and backend before installing
---binary PATH        Install a specific binary (default: dist/indexer)
+--binary PATH        Install a specific binary (default: dist/indexer or a fresh build)
+--olaf-version TAG   Olaf release to install when missing (default: v3.3.3)
+--olaf-binary PATH   Install a specific Olaf binary instead of downloading a release
 --prefix PATH        Install directory (default: /opt/indexer)
 --config-dir PATH    Configuration directory (default: /etc/indexer)
 --state-dir PATH     State and database directory (default: /var/lib/indexer)
