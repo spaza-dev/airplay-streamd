@@ -1,0 +1,503 @@
+$bg: #f4f5f7;
+$panel: #ffffff;
+$border: #e1e3e6;
+$text: #1f2328;
+$muted: #616b76;
+$accent: #0078d4;
+$success: #107c10;
+$warning: #b7791f;
+$error: #d13438;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: $bg;
+  color: $text;
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  color: $accent;
+}
+
+code {
+  background: #eef1f4;
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+.idx-page {
+  min-height: 100%;
+}
+
+.idx-shell {
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 24px 28px 60px;
+}
+
+.idx-masthead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid $border;
+}
+
+.idx-product {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: $muted;
+}
+
+.idx-title {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-top: 2px;
+}
+
+.idx-subtitle {
+  margin-top: 4px;
+  color: $muted;
+  font-size: 13px;
+}
+
+.idx-masthead-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.idx-tabs {
+  margin: 18px 0 14px;
+}
+
+.idx-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.idx-metrics,
+.idx-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.idx-card {
+  background: $panel;
+  border: 1px solid $border;
+  border-radius: 8px;
+  padding: 18px 20px;
+  box-shadow: 0 1px 2px rgba(15, 24, 36, 0.04);
+}
+
+.idx-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.idx-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: $muted;
+  margin-bottom: 12px;
+}
+
+.idx-card-header .idx-card-title {
+  margin-bottom: 0;
+}
+
+.idx-two-col {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 16px;
+}
+
+.idx-logs-col {
+  grid-template-columns: repeat(auto-fit, minmax(520px, 1fr));
+}
+
+.idx-metric {
+  background: $panel;
+  border: 1px solid $border;
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.idx-metric.info {
+  border-left-color: $accent;
+}
+.idx-metric.success {
+  border-left-color: $success;
+}
+.idx-metric.error {
+  border-left-color: $error;
+}
+.idx-metric.warning {
+  border-left-color: $warning;
+}
+.idx-metric.muted {
+  border-left-color: #8a8886;
+}
+.idx-metric.running {
+  border-left-color: #8764b8;
+}
+
+.idx-metric-value {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.idx-metric-label {
+  margin-top: 4px;
+  color: $muted;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.idx-metric-hint {
+  color: $muted;
+  font-size: 12px;
+}
+
+.idx-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.idx-status.success {
+  color: $success;
+}
+.idx-status.error {
+  color: $error;
+}
+.idx-status.info {
+  color: $accent;
+}
+.idx-status.running {
+  color: #6b4fa0;
+}
+.idx-status.muted {
+  color: $muted;
+}
+
+.idx-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.idx-definition {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f2f4;
+}
+
+.idx-definition:last-child {
+  border-bottom: 0;
+}
+
+.idx-definition-label {
+  color: $muted;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding-top: 2px;
+}
+
+.idx-definition-value {
+  min-width: 0;
+}
+
+.idx-toolbar {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.idx-filter,
+.idx-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: $muted;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.idx-filter select,
+.idx-filter input,
+.idx-field input,
+.idx-field select {
+  min-width: 180px;
+  height: 32px;
+  border: 1px solid #c8ccd1;
+  border-radius: 4px;
+  padding: 0 10px;
+  font-size: 14px;
+  color: $text;
+  background: #fff;
+}
+
+.idx-field {
+  margin-bottom: 12px;
+}
+
+.idx-field input,
+.idx-field select {
+  width: 100%;
+}
+
+.idx-search {
+  width: 260px;
+}
+
+.idx-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  color: $text;
+  margin: 8px 0;
+}
+
+.idx-table-wrap {
+  overflow: auto;
+  max-width: 100%;
+}
+
+.idx-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.idx-table th,
+.idx-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eef0f2;
+  vertical-align: top;
+}
+
+.idx-table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: $muted;
+  background: #fafbfc;
+  position: sticky;
+  top: 0;
+}
+
+.idx-job-table tbody tr {
+  cursor: pointer;
+}
+
+.idx-job-table tbody tr:hover {
+  background: #f5f9fd;
+}
+
+.idx-row-actions {
+  display: flex;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.idx-break {
+  word-break: break-all;
+}
+
+.idx-gap-row {
+  background: #fffaf0;
+}
+
+.idx-error-text {
+  color: $error;
+}
+
+.idx-muted {
+  color: $muted;
+  font-size: 12px;
+}
+
+.idx-empty {
+  color: $muted;
+  text-align: center;
+  padding: 22px;
+}
+
+.idx-loading {
+  display: flex;
+  justify-content: center;
+  padding: 40px;
+}
+
+.idx-progress {
+  width: 100px;
+  height: 6px;
+  border-radius: 3px;
+  background: #e8eaed;
+  overflow: hidden;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.idx-progress-bar {
+  height: 100%;
+  background: $accent;
+}
+
+.idx-progress-label {
+  margin-left: 8px;
+  font-size: 12px;
+  color: $muted;
+}
+
+.idx-panel-body {
+  padding: 4px 20px 24px;
+}
+
+.idx-panel-content {
+  max-width: 1100px;
+}
+
+.idx-panel-tabs {
+  margin: 0 0 8px;
+}
+
+.idx-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.idx-inline > *:first-child {
+  flex: 1;
+}
+
+.idx-hint {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #f3f6fa;
+  color: $muted;
+  font-size: 13px;
+}
+
+.idx-attempts {
+  margin-top: 18px;
+}
+
+.idx-log-list {
+  max-height: 520px;
+  overflow: auto;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.idx-log-entry {
+  display: grid;
+  grid-template-columns: 150px 54px 54px 76px 1fr;
+  gap: 8px;
+  padding: 5px 6px;
+  border-bottom: 1px solid #f0f2f4;
+  align-items: start;
+}
+
+.idx-log-entry.level-error {
+  background: #fdf3f4;
+}
+
+.idx-log-entry.level-warn {
+  background: #fffaf0;
+}
+
+.idx-log-time {
+  color: $muted;
+}
+
+.idx-log-level {
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.idx-log-entry.level-error .idx-log-level {
+  color: $error;
+}
+
+.idx-log-entry.level-warn .idx-log-level {
+  color: $warning;
+}
+
+.idx-log-entry.level-info .idx-log-level {
+  color: $accent;
+}
+
+.idx-log-job,
+.idx-log-stage {
+  color: $muted;
+}
+
+.idx-log-message {
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.idx-summary-grid {
+  margin-top: 18px;
+}
+
+@media (max-width: 760px) {
+  .idx-shell {
+    padding: 16px;
+  }
+
+  .idx-masthead {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .idx-definition {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  .idx-log-entry {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,33 @@
+server:
+  listen: "127.0.0.1:8788"
+  admin_token: "${INDEXER_ADMIN_TOKEN}"
+  event_token: "${INDEXER_EVENT_TOKEN}"
+  shutdown_grace_seconds: 30
+
+database:
+  path: "/var/lib/indexer/indexer.db"
+  workspace: "/var/lib/indexer/jobs"
+
+olaf:
+  binary: "/usr/local/bin/olaf"
+  threads: 4
+  timeout_minutes: 240
+
+ffprobe:
+  binary: "/usr/bin/ffprobe"
+  timeout_seconds: 60
+
+workers:
+  max_active_jobs: 1
+  downloads_per_job: 4
+  uploads_per_job: 4
+  job_timeout_minutes: 360
+  retry_initial_seconds: 60
+  retry_max_seconds: 3600
+  max_attempts: 3
+
+default_timezone: "Africa/Nairobi"
+
+logging:
+  level: "info"
+  file: "/var/log/indexer/indexer.log"
