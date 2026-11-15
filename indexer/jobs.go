@@ -147,7 +147,7 @@ func (d *DB) ListJobs(ctx context.Context, status, streamID string, limit, offse
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Job
+	out := make([]Job, 0)
 	for rows.Next() {
 		job, err := scanJob(rows)
 		if err != nil {
@@ -330,7 +330,7 @@ func (d *DB) Attempts(ctx context.Context, jobID int64) ([]map[string]any, error
 		return nil, err
 	}
 	defer rows.Close()
-	var out []map[string]any
+	out := make([]map[string]any, 0)
 	for rows.Next() {
 		var id, attempt int64
 		var status, started, errMsg, workspace string

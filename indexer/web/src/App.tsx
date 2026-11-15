@@ -200,7 +200,7 @@ export function App() {
         stream_id: streamFilter || undefined,
         limit: 200,
       });
-      setJobs(data.jobs);
+      setJobs(data.jobs || []);
       setCounts(data.counts);
       setError("");
     } catch (e) {
@@ -244,7 +244,7 @@ export function App() {
         setDiscovery(config);
         setSelectedStreams(config.selected_streams.join(", "));
         setExplicitDates((config.dates || []).join(", "));
-        setRuns(runData.runs);
+        setRuns(runData.runs || []);
       } catch (e) {
         setError((e as Error).message);
       }
@@ -269,7 +269,7 @@ export function App() {
           limit: 400,
         });
         if (!active) return;
-        setLogs(data.entries);
+        setLogs(data.entries || []);
         setServiceLogs(data.service || []);
       } catch (e) {
         setError((e as Error).message);
@@ -287,7 +287,7 @@ export function App() {
     if (tab !== "settings") return;
     Promise.all([api.storage(), api.settings()])
       .then(([storageData, settings]) => {
-        setStorage(storageData.storage);
+        setStorage(storageData.storage || []);
         setRuntime(settings);
       })
       .catch((e: Error) => setError(e.message));
@@ -409,7 +409,7 @@ export function App() {
         `Discovery ${result.run.status}: ${result.run.jobs_created} created, ${result.run.jobs_skipped} skipped`
       );
       const runData = await api.discoveryRuns();
-      setRuns(runData.runs);
+      setRuns(runData.runs || []);
       await refreshJobs();
     } catch (e) {
       setError((e as Error).message);
@@ -438,7 +438,7 @@ export function App() {
       setNotice("Storage configuration saved");
       setPanelMode("closed");
       const data = await api.storage();
-      setStorage(data.storage);
+      setStorage(data.storage || []);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -448,7 +448,7 @@ export function App() {
 
   const renderOverview = () => {
     const countsSafe = counts || {};
-    const recent = jobs.slice(0, 12);
+    const recent = (jobs || []).slice(0, 12);
     return (
       <div className="idx-section">
         <div className="idx-metrics">
@@ -935,7 +935,7 @@ export function App() {
                     onClick={() => {
                       if (window.confirm(`Delete storage configuration ${item.name}?`)) {
                         runAction(() => api.deleteStorage(item.id), `Deleted ${item.name}`).then(() =>
-                          api.storage().then((data) => setStorage(data.storage))
+                          api.storage().then((data) => setStorage(data.storage || []))
                         );
                       }
                     }}

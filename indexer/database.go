@@ -202,7 +202,7 @@ func (d *DB) StorageConfigs(ctx context.Context) ([]StorageConfig, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []StorageConfig
+	out := make([]StorageConfig, 0)
 	for rows.Next() {
 		var c StorageConfig
 		var pathStyle int
@@ -367,7 +367,7 @@ func (d *DB) DiscoveryRuns(ctx context.Context, limit int) ([]DiscoveryRun, erro
 		return nil, err
 	}
 	defer rows.Close()
-	var out []DiscoveryRun
+	out := make([]DiscoveryRun, 0)
 	for rows.Next() {
 		run, err := scanDiscoveryRun(rows)
 		if err != nil {
@@ -427,7 +427,7 @@ func (d *DB) JobLogs(ctx context.Context, jobID int64, level, stage, search stri
 		return nil, err
 	}
 	defer rows.Close()
-	var out []JobLog
+	out := make([]JobLog, 0)
 	for rows.Next() {
 		var entry JobLog
 		if err := rows.Scan(&entry.ID, &entry.JobID, &entry.Level, &entry.Stage, &entry.Message, &entry.CreatedAt); err != nil {
