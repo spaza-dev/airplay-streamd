@@ -64,8 +64,8 @@ func scanJob(scanner interface{ Scan(...any) error }) (*Job, error) {
 	job.NextAttemptAt = nullableTime(nextAttempt)
 	job.StartedAt = nullableTime(started)
 	job.CompletedAt = nullableTime(completed)
-	job.CreatedAt, _ = time.Parse(time.RFC3339Nano, createdAt)
-	job.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updatedAt)
+	job.CreatedAt = parseDBTime(createdAt)
+	job.UpdatedAt = parseDBTime(updatedAt)
 	return &job, nil
 }
 

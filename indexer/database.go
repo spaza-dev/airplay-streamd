@@ -95,6 +95,11 @@ func (d *DB) migrate() error {
 
 func utcNow() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 
+func parseDBTime(value string) time.Time {
+	t, _ := time.Parse(time.RFC3339Nano, value)
+	return t.UTC()
+}
+
 func nullableTime(value sql.NullString) *time.Time {
 	if !value.Valid || value.String == "" {
 		return nil
@@ -345,13 +350,15 @@ func (d *DB) FinishDiscoveryRun(ctx context.Context, id int64, run DiscoveryRun)
 
 func scanDiscoveryRun(scanner interface{ Scan(...any) error }) (DiscoveryRun, error) {
 	var run DiscoveryRun
+	var started string
 	var completed sql.NullString
-	err := scanner.Scan(&run.ID, &run.Trigger, &run.StartedAt, &completed, &run.Status,
+	err := scanner.Scan(&run.ID, &run.Trigger, &started, &completed, &run.Status,
 		&run.StreamsExamined, &run.DatesExamined, &run.EligibleDates, &run.JobsCreated,
 		&run.JobsSkipped, &run.Errors)
 	if err != nil {
 		return run, err
 	}
+	run.StartedAt = parseDBTime(started)
 	run.CompletedAt = nullableTime(completed)
 	return run, nil
 }
@@ -430,9 +437,11 @@ func (d *DB) JobLogs(ctx context.Context, jobID int64, level, stage, search stri
 	out := make([]JobLog, 0)
 	for rows.Next() {
 		var entry JobLog
-		if err := rows.Scan(&entry.ID, &entry.JobID, &entry.Level, &entry.Stage, &entry.Message, &entry.CreatedAt); err != nil {
+		var createdAt string
+		if err := rows.Scan(&entry.ID, &entry.JobID, &entry.Level, &entry.Stage, &entry.Message, &createdAt); err != nil {
 			return nil, err
 		}
+		entry.CreatedAt = parseDBTime(createdAt)
 		out = append(out, entry)
 	}
 	return out, rows.Err()
