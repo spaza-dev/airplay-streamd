@@ -18,7 +18,7 @@ ffprobe:
   timeout_seconds: 60
 
 workers:
-  max_active_jobs: 1
+  max_active_jobs: 2
   downloads_per_job: 4
   uploads_per_job: 4
   job_timeout_minutes: 360
