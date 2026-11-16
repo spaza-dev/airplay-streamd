@@ -76,6 +76,10 @@ Each match contains:
 - timeline offsets within the daily timeline;
 - Olaf match count and score when available.
 
+Olaf can return multiple overlapping alignment hypotheses for the same uploaded file and
+recording. Each overlapping cluster is reduced to the candidate with the highest match
+count; distinct non-overlapping occurrences are kept separately.
+
 ## Callbacks
 
 `callback_url` is optional. Events are JSON POSTs:

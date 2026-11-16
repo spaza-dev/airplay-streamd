@@ -75,7 +75,8 @@ Writer methods serialize through a mutex; reads use the same SQLite connection w
 5. For each index, write an isolated Olaf config and HOME, then run
    `olaf query --threads N --format json <files>`.
 6. Parse JSON, map resource IDs through `timeline.json`, apply date and daily-window
-   filters, persist matches, emit `job.matches` and `job.progress`.
+   filters, collapse overlapping alignment candidates per file and recording, persist
+   matches, and emit `job.matches` and `job.progress`.
 7. Mark complete, clean temporary artifacts, emit terminal callback.
 
 Retries set failed indexes back to pending while keeping completed indexes. Pause keeps

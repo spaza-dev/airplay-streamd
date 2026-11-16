@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -312,7 +313,12 @@ func (m *JobManager) execute(ctx context.Context, job *Job) error {
 		if err != nil {
 			return permanent(err)
 		}
-		mapped := a.mapMatches(job, &idx, timeline, matches, files, scope)
+		candidates := a.mapMatches(job, &idx, timeline, matches, files, scope)
+		mapped := dedupeOverlappingMatches(candidates)
+		if len(candidates) != len(mapped) {
+			a.logJob(job.ID, "debug", "query", "%s %s: %d Olaf candidates collapsed to %d matches",
+				idx.StreamID, idx.Date, len(candidates), len(mapped))
+		}
 		for _, match := range mapped {
 			if err := a.db.AddMatch(ctx, &match); err != nil {
 				return err
@@ -471,6 +477,62 @@ func (a *App) mapMatches(job *Job, idx *JobIndex, timeline *Timeline, matches []
 		})
 	}
 	return out
+}
+
+type matchDedupeKey struct {
+	fileID     int64
+	queryPath  string
+	resourceID string
+}
+
+func dedupeOverlappingMatches(matches []Match) []Match {
+	if len(matches) < 2 {
+		return matches
+	}
+	ordered := append([]Match(nil), matches...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left, right := ordered[i], ordered[j]
+		if left.MatchCount != right.MatchCount {
+			return left.MatchCount > right.MatchCount
+		}
+		leftDuration := left.ReferenceStopMS - left.ReferenceStartMS
+		rightDuration := right.ReferenceStopMS - right.ReferenceStartMS
+		if leftDuration != rightDuration {
+			return leftDuration > rightDuration
+		}
+		if !left.Occurrence.Equal(right.Occurrence) {
+			return left.Occurrence.Before(right.Occurrence)
+		}
+		return left.ReferenceStartMS < right.ReferenceStartMS
+	})
+
+	keptByKey := map[matchDedupeKey][]Match{}
+	kept := make([]Match, 0, len(ordered))
+	for _, candidate := range ordered {
+		key := matchDedupeKey{
+			fileID:     candidate.FileID,
+			queryPath:  candidate.QueryPath,
+			resourceID: candidate.ResourceID,
+		}
+		overlaps := false
+		for _, existing := range keptByKey[key] {
+			if matchIntervalsOverlap(candidate, existing) {
+				overlaps = true
+				break
+			}
+		}
+		if overlaps {
+			continue
+		}
+		keptByKey[key] = append(keptByKey[key], candidate)
+		kept = append(kept, candidate)
+	}
+	return kept
+}
+
+func matchIntervalsOverlap(left, right Match) bool {
+	return left.ReferenceStartMS < right.ReferenceStopMS &&
+		right.ReferenceStartMS < left.ReferenceStopMS
 }
 
 func (a *App) cleanupJob(jobID int64) {

@@ -475,6 +475,11 @@ Job file paths are not exposed in job detail responses. Match records include th
 `query_path` used during execution, which may refer to a workspace that has since been
 cleaned up.
 
+Olaf can report several overlapping alignment candidates for the same query file and
+archive recording. Queryd collapses each overlapping cluster to the candidate with the
+highest `match_count`. Non-overlapping occurrences are retained, so the same song played
+twice in one recording produces two matches rather than one.
+
 ### Logs and callbacks
 
 ```bash
