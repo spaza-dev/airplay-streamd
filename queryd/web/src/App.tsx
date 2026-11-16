@@ -3,6 +3,7 @@ import { Page } from "azure-devops-ui/Page";
 import { Tab, TabBar, TabSize } from "azure-devops-ui/Tabs";
 import { Button } from "azure-devops-ui/Button";
 import { Panel } from "azure-devops-ui/Panel";
+import { Spinner, SpinnerOrientation, SpinnerSize } from "azure-devops-ui/Spinner";
 import { MessageBar, MessageBarSeverity } from "azure-devops-ui/MessageBar";
 import { api, getToken, setToken } from "./api";
 import {
@@ -221,6 +222,7 @@ export function App() {
   const [error, setError] = React.useState("");
   const [notice, setNotice] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [submitting, setSubmitting] = React.useState(false);
   const [tab, setTab] = React.useState("overview");
   const [statusFilter, setStatusFilter] = React.useState("");
 
@@ -375,6 +377,7 @@ export function App() {
   };
 
   const submitJob = async () => {
+    if (submitting) return;
     if (!uploadFiles.length) {
       setError("Select at least one audio file");
       return;
@@ -403,7 +406,7 @@ export function App() {
     uploadFiles.forEach((file) => form.append("files", file));
     form.append("scope", JSON.stringify(scope));
     if (callbackURL.trim()) form.append("callback_url", callbackURL.trim());
-    setBusy(true);
+    setSubmitting(true);
     try {
       const result = await api.createJob(form);
       setNotice(`Created job ${result.job.id}`);
@@ -416,7 +419,7 @@ export function App() {
     } catch (e) {
       setError((e as Error).message);
     } finally {
-      setBusy(false);
+      setSubmitting(false);
     }
   };
 
@@ -487,6 +490,7 @@ export function App() {
           type="file"
           multiple
           accept=".mp3,.wav,.flac,.ogg,.opus,.m4a,.aac,.wma,.aiff,.aif"
+          disabled={submitting}
           onChange={(event) => setUploadFiles(Array.from(event.target.files || []))}
         />
         <div className="q-muted q-top-gap">
@@ -554,8 +558,20 @@ export function App() {
         <Field label="Callback URL (optional)" hint="Receives signed progressive JSON events">
           <input value={callbackURL} onChange={(event) => setCallbackURL(event.target.value)} placeholder="https://example.com/queryd/callback" />
         </Field>
-        <div className="q-masthead-actions">
-          <Button text="Submit query" primary disabled={busy} onClick={submitJob} />
+        <div className="q-submit-row">
+          <Button
+            text={submitting ? "Submitting query…" : "Submit query"}
+            primary
+            disabled={submitting}
+            onClick={submitJob}
+          />
+          {submitting ? (
+            <Spinner
+              size={SpinnerSize.small}
+              orientation={SpinnerOrientation.row}
+              label="Uploading files and creating job"
+            />
+          ) : null}
         </div>
       </div>
     </div>
