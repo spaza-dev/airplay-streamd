@@ -91,8 +91,9 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Listen string `yaml:"listen" json:"listen"`
-	Socket string `yaml:"socket" json:"socket"`
+	Listen     string `yaml:"listen" json:"listen"`
+	Socket     string `yaml:"socket" json:"socket"`
+	AdminToken string `yaml:"admin_token" json:"-"`
 }
 
 type RecordingConfig struct {
@@ -704,6 +705,9 @@ func (a *App) loggerFor(id string) *Logger { return a.logger }
 
 func (a *App) saveConfigLocked() error {
 	snapshot := *a.cfg
+	if snapshot.Server.AdminToken != "" {
+		snapshot.Server.AdminToken = "${STREAMD_ADMIN_TOKEN}"
+	}
 	if snapshot.Storage.AccessKeyID != "" {
 		snapshot.Storage.AccessKeyID = "${S3_ACCESS_KEY_ID}"
 	}

@@ -55,6 +55,7 @@ The authoritative development specification is in [`docs/streamd-requirements.md
 - One `meta.json` per stream at its S3 root, replaced in place on metadata updates.
 - No per-chunk metadata sidecar files.
 - CLI commands for stream management and logs.
+- A read-only public `/api/streams` API with optional bearer authentication and Swagger UI.
 - Embedded dashboard with streams, filters, drawer details, logs, and uploader indicators.
 - Systemd service and socket activation for `/run/streamd.sock`.
 - Install and update scripts that preserve configuration, secrets, chunks, and the queue.
@@ -249,6 +250,7 @@ The demo intentionally disables the uploader. See [Installation](#installation) 
 server:
   listen: "127.0.0.1:8787"
   socket: "/run/streamd.sock"
+  admin_token: "${STREAMD_ADMIN_TOKEN}"
 
 recording:
   chunk_seconds: 300
@@ -322,12 +324,15 @@ streams:
 Create `.env` with restricted permissions:
 
 ```bash
+STREAMD_ADMIN_TOKEN=
 S3_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
 S3_REGION=auto
 S3_BUCKET=your-bucket
 S3_ACCESS_KEY_ID=
 S3_SECRET_ACCESS_KEY=
 ```
+
+`STREAMD_ADMIN_TOKEN` is optional. When set, it protects the read-only `/api/*` endpoints; when empty, those endpoints are unauthenticated. The existing `/control/*` CLI and dashboard endpoints keep their current localhost/socket access model.
 
 For AWS S3, set `S3_ENDPOINT` to the regional endpoint, for example `https://s3.eu-west-1.amazonaws.com`, and set `S3_REGION` to the bucket region, for example `eu-west-1`. `streamd` requires a non-empty `storage.endpoint` whenever the uploader is enabled.
 
@@ -342,6 +347,7 @@ For AWS S3, set `S3_ENDPOINT` to the regional endpoint, for example `https://s3.
 |---|---|---|
 | `server.listen` | `127.0.0.1:8787` | TCP address for the dashboard and API. |
 | `server.socket` | `/run/streamd.sock` | Unix socket for CLI/API clients. |
+| `server.admin_token` | empty | Optional token for the read-only `/api/*` endpoints. Empty disables authentication. |
 
 The HTTP server binds to localhost by default. Do not expose it publicly without a reverse proxy and authentication.
 
@@ -656,6 +662,60 @@ GET /control/status
 ```
 
 Returns version, uptime, stream count, and uploader status.
+
+### Read-only public API
+
+```http
+GET /api/streams
+```
+
+Returns overview data for streams with `enabled: true`. The response intentionally omits `chunk_seconds`, metadata, uploader data, and queue state.
+
+```json
+{
+  "streams": [
+    {
+      "id": "capital-fm-ke",
+      "name": "Capital FM Kenya",
+      "status": "running",
+      "type": "radio",
+      "url": "https://example.com/stream",
+      "enabled": true,
+      "last_activity": "2026-11-16T10:05:00Z",
+      "audio": {
+        "codec": "libopus",
+        "container": "ogg",
+        "bitrate": "96k",
+        "sample_rate": 48000,
+        "channels": 2,
+        "vbr": true
+      },
+      "video": {
+        "enabled": false,
+        "codec": "libx264",
+        "bitrate": "2500k",
+        "container": "mp4"
+      }
+    }
+  ]
+}
+```
+
+`status` is one of `running`, `stopped`, `error`, or `idle`. An `error` field is included when the stream has an active recording error. `last_activity` is in-memory and resets when the daemon restarts.
+
+Authentication is optional and controlled by `server.admin_token` (`STREAMD_ADMIN_TOKEN`). When configured, send either:
+
+```bash
+curl -H 'Authorization: Bearer <token>' http://127.0.0.1:8787/api/streams
+curl -H 'X-Admin-Token: <token>' http://127.0.0.1:8787/api/streams
+```
+
+Swagger UI and the OpenAPI document are available at:
+
+```text
+GET /docs
+GET /openapi.json
+```
 
 ### Streams
 
@@ -1076,6 +1136,7 @@ streamd-test/recordings/YYYY/MM/DD/HHMMSS.ogg
 - Installed `.env` is `0640 root:streamd`; only root and the service group can read it.
 - The HTTP API binds to `127.0.0.1` by default.
 - The Unix socket is `0660`.
+- `server.admin_token` optionally protects the read-only `/api/*` endpoints. When it is empty, `/api/streams` is public and exposes stream source URLs to anyone who can reach the listener.
 - Stream IDs are validated with `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`.
 - URL schemes are allow-listed.
 - FFmpeg and yt-dlp are invoked with structured argument arrays; no shell is used.

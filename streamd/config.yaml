@@ -1,6 +1,7 @@
 server:
   listen: "127.0.0.1:8787"
   socket: "/run/streamd.sock"
+  admin_token: "${STREAMD_ADMIN_TOKEN}"
 
 recording:
   chunk_seconds: 300

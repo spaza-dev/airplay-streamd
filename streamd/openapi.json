@@ -1,0 +1,215 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "streamd Public API",
+    "description": "Read-only stream overview endpoints. The API is unauthenticated when server.admin_token is empty.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "paths": {
+    "/api/streams": {
+      "get": {
+        "summary": "List enabled streams",
+        "description": "Returns overview data for all streams with enabled: true. Authentication is optional and controlled by server.admin_token.",
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Enabled streams",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown API path",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      },
+      "adminToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Admin-Token"
+      }
+    },
+    "schemas": {
+      "StreamsResponse": {
+        "type": "object",
+        "required": [
+          "streams"
+        ],
+        "properties": {
+          "streams": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Stream"
+            }
+          }
+        }
+      },
+      "Stream": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "status",
+          "type",
+          "url",
+          "enabled",
+          "last_activity",
+          "audio",
+          "video"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "stopped",
+              "error",
+              "idle"
+            ]
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "radio",
+              "tv",
+              "hls",
+              "direct",
+              "youtube",
+              "twitch",
+              "web"
+            ]
+          },
+          "url": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "last_activity": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "audio": {
+            "$ref": "#/components/schemas/AudioConfig"
+          },
+          "video": {
+            "$ref": "#/components/schemas/VideoConfig"
+          },
+          "error": {
+            "type": "string",
+            "description": "Present when the stream has an active recording error."
+          }
+        }
+      },
+      "AudioConfig": {
+        "type": "object",
+        "required": [
+          "codec",
+          "container",
+          "bitrate",
+          "sample_rate",
+          "channels"
+        ],
+        "properties": {
+          "codec": {
+            "type": "string"
+          },
+          "container": {
+            "type": "string"
+          },
+          "bitrate": {
+            "type": "string"
+          },
+          "sample_rate": {
+            "type": "integer"
+          },
+          "channels": {
+            "type": "integer"
+          },
+          "vbr": {
+            "type": "boolean",
+            "nullable": true
+          }
+        }
+      },
+      "VideoConfig": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "codec": {
+            "type": "string"
+          },
+          "bitrate": {
+            "type": "string"
+          },
+          "container": {
+            "type": "string"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,9 @@ import (
 //go:embed all:web/dist
 var embeddedWeb embed.FS
 
+//go:embed openapi.json
+var openAPIDoc []byte
+
 type StreamView struct {
 	ID           string         `json:"id"`
 	Name         string         `json:"name"`
@@ -37,6 +41,23 @@ type StreamView struct {
 	Stopped      bool           `json:"stopped"`
 	Error        string         `json:"error,omitempty"`
 	LastActivity *time.Time     `json:"last_activity,omitempty"`
+}
+
+type PublicStreamView struct {
+	ID           string       `json:"id"`
+	Name         string       `json:"name"`
+	Status       string       `json:"status"`
+	Type         string       `json:"type"`
+	URL          string       `json:"url"`
+	Enabled      bool         `json:"enabled"`
+	LastActivity *time.Time   `json:"last_activity"`
+	Audio        *AudioConfig `json:"audio"`
+	Video        *VideoConfig `json:"video"`
+	Error        string       `json:"error,omitempty"`
+}
+
+type PublicStreamsResponse struct {
+	Streams []PublicStreamView `json:"streams"`
 }
 
 type QueueItemView struct {
@@ -67,32 +88,10 @@ func NewWebServer(app *App) *WebServer {
 }
 
 func (w *WebServer) Start() error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", w.handleHealth)
-	mux.HandleFunc("GET /control/status", w.handleStatus)
-	mux.HandleFunc("GET /control/streams", w.handleStreams)
-	mux.HandleFunc("POST /control/streams", w.handleAddStream)
-	mux.HandleFunc("GET /control/streams/{id}", w.handleStream)
-	mux.HandleFunc("PUT /control/streams/{id}", w.handleUpdateStream)
-	mux.HandleFunc("DELETE /control/streams/{id}", w.handleRemoveStream)
-	mux.HandleFunc("POST /control/streams/{id}/start", w.handleStartStream)
-	mux.HandleFunc("POST /control/streams/{id}/stop", w.handleStopStream)
-	mux.HandleFunc("POST /control/streams/{id}/restart", w.handleRestartStream)
-	mux.HandleFunc("GET /control/logs", w.handleLogs)
-	mux.HandleFunc("GET /control/logs/stream/{id}", w.handleStreamLogs)
-	mux.HandleFunc("GET /control/uploader/status", w.handleUploaderStatus)
-	mux.HandleFunc("GET /control/uploader/queue", w.handleUploaderQueue)
-	for _, method := range []string{"GET", "POST", "PUT", "DELETE", "PATCH"} {
-		mux.HandleFunc(method+" /control/", func(rw http.ResponseWriter, r *http.Request) {
-			writeError(rw, http.StatusNotFound, "not found")
-		})
-	}
-
-	sub, err := fs.Sub(embeddedWeb, "web/dist")
+	handler, err := w.handler()
 	if err != nil {
 		return err
 	}
-	mux.Handle("GET /", spaHandler(sub))
 
 	cfg := w.app.Config()
 	tcpListener, err := net.Listen("tcp", cfg.Server.Listen)
@@ -100,7 +99,7 @@ func (w *WebServer) Start() error {
 		return fmt.Errorf("listen %s: %w", cfg.Server.Listen, err)
 	}
 	w.mu.Lock()
-	w.tcp = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	w.tcp = &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	w.mu.Unlock()
 	go func() {
 		if err := w.tcp.Serve(tcpListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -126,7 +125,7 @@ func (w *WebServer) Start() error {
 		if ul != nil {
 			w.mu.Lock()
 			w.unixListener = ul
-			w.unix = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+			w.unix = &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 			w.mu.Unlock()
 			go func() {
 				if err := w.unix.Serve(ul); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -136,6 +135,42 @@ func (w *WebServer) Start() error {
 		}
 	}
 	return nil
+}
+
+func (w *WebServer) handler() (http.Handler, error) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", w.handleHealth)
+	mux.HandleFunc("GET /api/streams", w.handlePublicStreams)
+	mux.HandleFunc("GET /openapi.json", w.handleOpenAPI)
+	mux.HandleFunc("GET /docs", w.handleDocs)
+	mux.HandleFunc("GET /control/status", w.handleStatus)
+	mux.HandleFunc("GET /control/streams", w.handleStreams)
+	mux.HandleFunc("POST /control/streams", w.handleAddStream)
+	mux.HandleFunc("GET /control/streams/{id}", w.handleStream)
+	mux.HandleFunc("PUT /control/streams/{id}", w.handleUpdateStream)
+	mux.HandleFunc("DELETE /control/streams/{id}", w.handleRemoveStream)
+	mux.HandleFunc("POST /control/streams/{id}/start", w.handleStartStream)
+	mux.HandleFunc("POST /control/streams/{id}/stop", w.handleStopStream)
+	mux.HandleFunc("POST /control/streams/{id}/restart", w.handleRestartStream)
+	mux.HandleFunc("GET /control/logs", w.handleLogs)
+	mux.HandleFunc("GET /control/logs/stream/{id}", w.handleStreamLogs)
+	mux.HandleFunc("GET /control/uploader/status", w.handleUploaderStatus)
+	mux.HandleFunc("GET /control/uploader/queue", w.handleUploaderQueue)
+	for _, method := range []string{"GET", "POST", "PUT", "DELETE", "PATCH"} {
+		mux.HandleFunc(method+" /control/", func(rw http.ResponseWriter, r *http.Request) {
+			writeError(rw, http.StatusNotFound, "not found")
+		})
+		mux.HandleFunc(method+" /api/", func(rw http.ResponseWriter, r *http.Request) {
+			writeError(rw, http.StatusNotFound, "not found")
+		})
+	}
+
+	sub, err := fs.Sub(embeddedWeb, "web/dist")
+	if err != nil {
+		return nil, err
+	}
+	mux.Handle("GET /", spaHandler(sub))
+	return w.authMiddleware(mux), nil
 }
 
 func (w *WebServer) Shutdown(ctx context.Context) error {
@@ -157,6 +192,63 @@ func (w *WebServer) Shutdown(ctx context.Context) error {
 		_ = ul.Close()
 	}
 	return firstErr
+}
+
+func (w *WebServer) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(rw, r)
+			return
+		}
+		token := w.app.Config().Server.AdminToken
+		if token == "" {
+			next.ServeHTTP(rw, r)
+			return
+		}
+		provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if provided == "" {
+			provided = r.Header.Get("X-Admin-Token")
+		}
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(token)) != 1 {
+			writeError(rw, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		next.ServeHTTP(rw, r)
+	})
+}
+
+func (w *WebServer) handlePublicStreams(rw http.ResponseWriter, r *http.Request) {
+	cfg := w.app.Config()
+	statuses := w.app.recorder.Statuses()
+	views := make([]PublicStreamView, 0, len(cfg.Streams))
+	for _, base := range cfg.Streams {
+		if !base.Enabled {
+			continue
+		}
+		eff, ok := cfg.FindStream(base.ID)
+		if !ok {
+			continue
+		}
+		views = append(views, makePublicStreamView(w.app, eff, statuses[base.ID]))
+	}
+	sort.Slice(views, func(i, j int) bool { return views[i].ID < views[j].ID })
+	writeJSON(rw, http.StatusOK, PublicStreamsResponse{Streams: views})
+}
+
+func (w *WebServer) handleOpenAPI(rw http.ResponseWriter, r *http.Request) {
+	rw.Header().Set("Content-Type", "application/json")
+	_, _ = rw.Write(openAPIDoc)
+}
+
+func (w *WebServer) handleDocs(rw http.ResponseWriter, r *http.Request) {
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = fmt.Fprint(rw, `<!doctype html>
+<html><head><meta charset="utf-8"><title>streamd API</title>
+<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css"></head>
+<body><div id="swagger-ui"></div>
+<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script>window.onload=function(){SwaggerUIBundle({url:"/openapi.json",dom_id:"#swagger-ui"});};</script>
+</body></html>`)
 }
 
 func (w *WebServer) handleHealth(rw http.ResponseWriter, r *http.Request) {
@@ -314,6 +406,23 @@ func makeStreamView(app *App, eff StreamConfig, st WorkerStatus) StreamView {
 		Audio: eff.Audio, Video: eff.Video, Metadata: eff.Metadata,
 		Running: st.Running, Stopped: app.isStopped(eff.ID), Error: st.Error,
 		LastActivity: st.LastActivity,
+	}
+}
+
+func makePublicStreamView(app *App, eff StreamConfig, st WorkerStatus) PublicStreamView {
+	status := "idle"
+	switch {
+	case st.Error != "":
+		status = "error"
+	case st.Running:
+		status = "running"
+	case app.isStopped(eff.ID):
+		status = "stopped"
+	}
+	return PublicStreamView{
+		ID: eff.ID, Name: eff.Name, Status: status, Type: eff.Type, URL: eff.URL,
+		Enabled: eff.Enabled, LastActivity: st.LastActivity,
+		Audio: eff.Audio, Video: eff.Video, Error: st.Error,
 	}
 }
 

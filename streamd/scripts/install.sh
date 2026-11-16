@@ -70,6 +70,7 @@ if [ ! -f "$CONFIG_DIR/.env" ]; then
   else
     umask 027
     cat > "$CONFIG_DIR/.env" <<'EOF'
+STREAMD_ADMIN_TOKEN=
 S3_ENDPOINT=
 S3_REGION=auto
 S3_BUCKET=

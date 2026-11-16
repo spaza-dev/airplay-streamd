@@ -278,6 +278,7 @@ func TestSaveConfigRedactsCredentials(t *testing.T) {
 		Endpoint: "https://example.r2.cloudflarestorage.com", Region: "auto",
 		Bucket: "bucket", AccessKeyID: "super-secret-key", SecretAccessKey: "super-secret-value",
 	}
+	cfg.Server.AdminToken = "super-secret-token"
 	cfg.Streams = []StreamConfig{{ID: "one", Type: "direct", URL: "https://example.com/a.ogg"}}
 	cfgPath := filepath.Join(dir, "config.yaml")
 	logger, err := NewLogger("error", "")
@@ -303,14 +304,21 @@ func TestSaveConfigRedactsCredentials(t *testing.T) {
 	if !strings.Contains(text, "${S3_ACCESS_KEY_ID}") || !strings.Contains(text, "${S3_SECRET_ACCESS_KEY}") {
 		t.Fatalf("credential placeholders missing:\n%s", text)
 	}
+	if !strings.Contains(text, "${STREAMD_ADMIN_TOKEN}") {
+		t.Fatalf("admin token placeholder missing:\n%s", text)
+	}
 
 	t.Setenv("S3_ACCESS_KEY_ID", "super-secret-key")
 	t.Setenv("S3_SECRET_ACCESS_KEY", "super-secret-value")
+	t.Setenv("STREAMD_ADMIN_TOKEN", "super-secret-token")
 	loaded, err := loadConfig(cfgPath, filepath.Join(dir, "missing.env"))
 	if err != nil {
 		t.Fatalf("reload saved config: %v", err)
 	}
 	if loaded.Storage.AccessKeyID != "super-secret-key" || loaded.Storage.SecretAccessKey != "super-secret-value" {
 		t.Fatalf("credentials not restored from env: %+v", loaded.Storage)
+	}
+	if loaded.Server.AdminToken != "super-secret-token" {
+		t.Fatalf("admin token not restored from env: %q", loaded.Server.AdminToken)
 	}
 }
