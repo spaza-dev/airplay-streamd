@@ -1,0 +1,207 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "queryd API",
+    "version": "1.0.0",
+    "description": "Asynchronous broadcast archive query service."
+  },
+  "servers": [
+    { "url": "/" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "adminToken": { "type": "http", "scheme": "bearer" }
+    },
+    "schemas": {
+      "Scope": {
+        "type": "object",
+        "required": ["streams", "dates"],
+        "properties": {
+          "streams": {
+            "type": "object",
+            "required": ["mode"],
+            "properties": {
+              "mode": { "type": "string", "enum": ["all", "ids", "country"] },
+              "ids": { "type": "array", "items": { "type": "string" } },
+              "country": { "type": "string" }
+            }
+          },
+          "dates": {
+            "type": "object",
+            "required": ["mode"],
+            "properties": {
+              "mode": { "type": "string", "enum": ["date", "range"] },
+              "date": { "type": "string", "format": "date" },
+              "from": { "type": "string", "format": "date" },
+              "to": { "type": "string", "format": "date" }
+            }
+          },
+          "daily_time_window": {
+            "type": "object",
+            "properties": {
+              "start": { "type": "string", "example": "18:00" },
+              "end": { "type": "string", "example": "22:00" },
+              "basis": { "type": "string", "enum": ["stream_local"] },
+              "match": { "type": "string", "enum": ["overlap"] }
+            }
+          }
+        }
+      },
+      "Job": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "status": { "type": "string" },
+          "stage": { "type": "string" },
+          "progress": { "type": "number" },
+          "error": { "type": "string" },
+          "total_files": { "type": "integer" },
+          "total_indexes": { "type": "integer" },
+          "processed_indexes": { "type": "integer" },
+          "total_matches": { "type": "integer" },
+          "attempts": { "type": "integer" },
+          "callback_url": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "started_at": { "type": "string", "format": "date-time" },
+          "completed_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Match": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "file_id": { "type": "integer" },
+          "file_name": { "type": "string" },
+          "resource_id": { "type": "string" },
+          "stream_id": { "type": "string" },
+          "date": { "type": "string" },
+          "occurrence_time": { "type": "string", "format": "date-time" },
+          "reference_start_ms": { "type": "integer" },
+          "reference_stop_ms": { "type": "integer" },
+          "match_count": { "type": "integer" },
+          "score": { "type": "number" },
+          "timeline_start_ms": { "type": "integer" },
+          "timeline_end_ms": { "type": "integer" }
+        }
+      }
+    }
+  },
+  "security": [{ "adminToken": [] }],
+  "paths": {
+    "/api/health": {
+      "get": { "security": [], "summary": "Health check", "responses": { "200": { "description": "OK" } } }
+    },
+    "/api/health/ready": {
+      "get": { "security": [], "summary": "Readiness check", "responses": { "200": { "description": "Ready" }, "503": { "description": "Not ready" } } }
+    },
+    "/api/jobs": {
+      "get": {
+        "summary": "List jobs",
+        "parameters": [
+          { "name": "status", "in": "query", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer" } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      },
+      "post": {
+        "summary": "Create a query job",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["files", "scope"],
+                "properties": {
+                  "files": { "type": "array", "items": { "type": "string", "format": "binary" } },
+                  "scope": { "type": "string", "description": "JSON encoded Scope" },
+                  "callback_url": { "type": "string", "format": "uri" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Created" }, "400": { "description": "Invalid request" }, "503": { "description": "Storage unavailable" } }
+      }
+    },
+    "/api/jobs/logs": {
+      "get": {
+        "summary": "List recent logs across jobs",
+        "parameters": [
+          { "name": "level", "in": "query", "schema": { "type": "string" } },
+          { "name": "search", "in": "query", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/jobs/{id}": {
+      "get": {
+        "summary": "Get a job with files and indexes",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "OK" }, "404": { "description": "Not found" } }
+      }
+    },
+    "/api/jobs/{id}/matches": {
+      "get": {
+        "summary": "List mapped matches",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } },
+          { "name": "file_id", "in": "query", "schema": { "type": "integer" } },
+          { "name": "stream_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer" } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/jobs/{id}/logs": {
+      "get": {
+        "summary": "List job logs",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } },
+          { "name": "level", "in": "query", "schema": { "type": "string" } },
+          { "name": "search", "in": "query", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer" } },
+          { "name": "offset", "in": "query", "schema": { "type": "integer" } }
+        ],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/jobs/{id}/callbacks": {
+      "get": {
+        "summary": "List callback deliveries",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/jobs/{id}/pause": {
+      "post": {
+        "summary": "Pause a job",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/jobs/{id}/resume": {
+      "post": {
+        "summary": "Resume a paused job",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "OK" }, "409": { "description": "Not paused" } }
+      }
+    },
+    "/api/jobs/{id}/cancel": {
+      "post": {
+        "summary": "Cancel a queued, paused, or running job",
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+        "responses": { "200": { "description": "OK" } }
+      }
+    },
+    "/api/stats": {
+      "get": {
+        "summary": "Service and job statistics",
+        "responses": { "200": { "description": "OK" } }
+      }
+    }
+  }
+}

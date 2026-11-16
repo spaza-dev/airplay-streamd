@@ -1,0 +1,24 @@
+{
+  "name": "queryd-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build && mkdir -p dist && touch dist/.gitkeep",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "azure-devops-ui": "2.282.0",
+    "react": "16.14.0",
+    "react-dom": "16.14.0"
+  },
+  "devDependencies": {
+    "@types/react": "16.14.0",
+    "@types/react-dom": "16.9.24",
+    "@vitejs/plugin-react": "5.0.4",
+    "sass": "1.93.2",
+    "typescript": "5.9.3",
+    "vite": "7.3.8"
+  }
+}

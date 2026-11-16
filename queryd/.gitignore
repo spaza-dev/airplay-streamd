@@ -1,0 +1,8 @@
+/dist/
+/queryd
+*.test
+.env
+web/dist/*
+!web/dist/.gitkeep
+web/node_modules
+/tmp/

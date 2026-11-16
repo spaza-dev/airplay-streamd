@@ -1,0 +1,47 @@
+server:
+  listen: "127.0.0.1:8790"
+  admin_token: "${QUERYD_ADMIN_TOKEN}"
+  shutdown_grace_seconds: 30
+
+database:
+  path: "/var/lib/queryd/queryd.db"
+  workspace: "/var/lib/queryd/jobs"
+
+limits:
+  max_upload_files: 20
+  max_upload_mb: 200
+  max_total_upload_mb: 1000
+  max_indexes_per_job: 500
+  max_download_gb: 50
+  min_free_disk_gb: 10
+
+workers:
+  max_active_jobs: 1
+  downloads_per_job: 4
+  olaf_threads: 2
+  job_timeout_minutes: 360
+  retry_initial_seconds: 30
+  retry_max_seconds: 1800
+  max_attempts: 3
+
+olaf:
+  binary: "/usr/local/bin/olaf"
+  target_sample_rate: 16000
+  min_match_count: 20
+  max_results: 500
+  timeout_minutes: 60
+
+callbacks:
+  timeout_seconds: 15
+  max_attempts: 8
+  signing_secret: "${QUERYD_CALLBACK_SECRET}"
+
+retention:
+  jobs_days: 30
+  logs_days: 30
+
+default_timezone: "Africa/Nairobi"
+
+logging:
+  level: "info"
+  file: "/var/log/queryd/queryd.log"

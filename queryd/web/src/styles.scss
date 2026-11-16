@@ -1,0 +1,462 @@
+$bg: #f4f5f7;
+$panel: #ffffff;
+$border: #e1e3e6;
+$text: #1f2328;
+$muted: #616b76;
+$accent: #0078d4;
+$success: #107c10;
+$warning: #b7791f;
+$error: #d13438;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: $bg;
+  color: $text;
+  font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a {
+  color: $accent;
+}
+
+code {
+  background: #eef1f4;
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+.q-page {
+  min-height: 100%;
+}
+
+.q-shell {
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 24px 28px 60px;
+}
+
+.q-masthead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid $border;
+}
+
+.q-product {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: $muted;
+}
+
+.q-title {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-top: 2px;
+}
+
+.q-subtitle {
+  margin-top: 4px;
+  color: $muted;
+  font-size: 13px;
+}
+
+.q-masthead-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.q-tabs {
+  margin: 18px 0 14px;
+}
+
+.q-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.q-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.q-card {
+  background: $panel;
+  border: 1px solid $border;
+  border-radius: 8px;
+  padding: 18px 20px;
+  box-shadow: 0 1px 2px rgba(15, 24, 36, 0.04);
+}
+
+.q-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.q-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: $muted;
+  margin-bottom: 12px;
+}
+
+.q-card-header .q-card-title {
+  margin-bottom: 0;
+}
+
+.q-two-col {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 16px;
+}
+
+.q-logs-col {
+  grid-template-columns: repeat(auto-fit, minmax(520px, 1fr));
+}
+
+.q-metric {
+  background: $panel;
+  border: 1px solid $border;
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.q-metric.info {
+  border-left-color: $accent;
+}
+.q-metric.success {
+  border-left-color: $success;
+}
+.q-metric.error {
+  border-left-color: $error;
+}
+.q-metric.warning {
+  border-left-color: $warning;
+}
+.q-metric.muted {
+  border-left-color: #8a8886;
+}
+.q-metric.running {
+  border-left-color: #8764b8;
+}
+
+.q-metric-value {
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.1;
+}
+
+.q-metric-label {
+  margin-top: 4px;
+  color: $muted;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.q-metric-hint {
+  color: $muted;
+  font-size: 12px;
+}
+
+.q-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.q-status.success {
+  color: $success;
+}
+.q-status.error {
+  color: $error;
+}
+.q-status.info {
+  color: $accent;
+}
+.q-status.running {
+  color: #6b4fa0;
+}
+.q-status.muted {
+  color: $muted;
+}
+
+.q-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.q-definition {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid #f0f2f4;
+}
+
+.q-definition:last-child {
+  border-bottom: 0;
+}
+
+.q-definition-label {
+  color: $muted;
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding-top: 2px;
+}
+
+.q-definition-value {
+  min-width: 0;
+}
+
+.q-toolbar {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.q-filter,
+.q-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: $muted;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.q-filter select,
+.q-filter input,
+.q-field input,
+.q-field select,
+.q-inline input {
+  min-width: 180px;
+  height: 32px;
+  border: 1px solid #c8ccd1;
+  border-radius: 4px;
+  padding: 0 10px;
+  font-size: 14px;
+  color: $text;
+  background: #fff;
+}
+
+.q-field {
+  margin-bottom: 12px;
+}
+
+.q-field input,
+.q-field select {
+  width: 100%;
+}
+
+.q-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0 16px;
+}
+
+.q-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.q-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  color: $text;
+  margin: 8px 0 16px;
+}
+
+.q-table-wrap {
+  overflow: auto;
+  max-width: 100%;
+}
+
+.q-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.q-table th,
+.q-table td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eef0f2;
+  vertical-align: top;
+}
+
+.q-table th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: $muted;
+  background: #fafbfc;
+  position: sticky;
+  top: 0;
+}
+
+.q-job-table tbody tr {
+  cursor: pointer;
+}
+
+.q-job-table tbody tr:hover {
+  background: #f5f9fd;
+}
+
+.q-row-actions {
+  display: flex;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.q-break {
+  word-break: break-all;
+}
+
+.q-error-text {
+  color: $error;
+}
+
+.q-muted {
+  color: $muted;
+  font-size: 12px;
+}
+
+.q-empty {
+  color: $muted;
+  text-align: center;
+  padding: 20px;
+}
+
+.q-top-gap {
+  margin-top: 16px;
+}
+
+.q-bottom-gap {
+  margin-bottom: 12px;
+}
+
+.q-loglist {
+  max-height: 560px;
+  overflow: auto;
+  border: 1px solid #eef0f2;
+  border-radius: 6px;
+}
+
+.q-logrow {
+  display: grid;
+  grid-template-columns: 58px 150px 90px 1fr;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #f3f5f7;
+  font-size: 12px;
+  align-items: start;
+}
+
+.q-logrow:last-child {
+  border-bottom: 0;
+}
+
+.q-loglevel {
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 10px;
+  padding-top: 2px;
+}
+
+.q-loglevel.info {
+  color: $accent;
+}
+.q-loglevel.warn,
+.q-loglevel.warning {
+  color: $warning;
+}
+.q-loglevel.error {
+  color: $error;
+}
+.q-loglevel.debug {
+  color: $muted;
+}
+
+.q-logtime {
+  color: $muted;
+}
+
+.q-logstage {
+  color: #6b4fa0;
+  font-weight: 600;
+}
+
+.q-logmessage {
+  word-break: break-word;
+}
+
+.q-panel-content {
+  height: 100%;
+}
+
+.q-panel-body {
+  padding: 12px 20px 24px;
+}
+
+.q-panel-tabs {
+  margin: 0 20px 12px;
+}
+
+@media (max-width: 720px) {
+  .q-shell {
+    padding: 16px 14px 40px;
+  }
+  .q-masthead {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .q-logrow {
+    grid-template-columns: 52px 1fr;
+  }
+  .q-logtime,
+  .q-logstage {
+    display: none;
+  }
+}
