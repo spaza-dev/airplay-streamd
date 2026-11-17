@@ -644,11 +644,15 @@ body {
 .streamd-discovery-search {
   display: flex;
   gap: 8px;
-  align-items: center;
+  align-items: flex-end;
 
   > *:first-child {
     flex: 1;
   }
+}
+
+.streamd-discovery-country select {
+  width: 100%;
 }
 
 .streamd-discovery-results {

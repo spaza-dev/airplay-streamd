@@ -920,7 +920,7 @@ The dashboard is embedded in the binary and served at `/`.
 Main views:
 
 - **Streams**: name, UUID, type, country, source, recording state, enabled state, last activity, start/stop/restart/remove actions, search, type/status/country filters, pagination. Long names, URLs, IDs, countries, and errors are truncated safely in the table.
-- **Add stream**: Radio Browser search by country with one-click add; the panel stays open so multiple stations can be added or removed, or use the custom source form without a user-supplied ID.
+- **Add stream**: Radio Browser search by country selected from a list, with one-click add; the panel stays open so multiple stations can be added or removed, or use the custom source form without a user-supplied ID.
 - **Stream details drawer**: Overview (including CPU, memory, output rate and chunk rate), Metadata, Logs, and Delete.
 - **System**: host CPU/memory/disk/network metrics, capacity recommendation, limiting-resource bars, CPU/network/backlog sparklines, and per-stream usage.
 - **Logs**: service-wide or per-stream, with level and search filters.

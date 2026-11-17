@@ -8,6 +8,7 @@ import { Panel } from "azure-devops-ui/Panel";
 import { Spinner } from "azure-devops-ui/Spinner";
 import { MessageBar, MessageBarSeverity } from "azure-devops-ui/MessageBar";
 import { api } from "./api";
+import { COUNTRY_OPTIONS } from "./countries";
 import { DiscoveryStation, LogEntry, MetricsSnapshot, StreamView, UploaderStatus } from "./types";
 
 const STREAM_TYPES = ["radio", "tv", "hls", "direct", "youtube", "twitch", "web"];
@@ -469,7 +470,7 @@ export function App() {
     setError("");
     try {
       const data = await api.searchRadio({
-        country: radioCountry.trim(),
+        countrycode: radioCountry,
         limit: 50,
         hidebroken: "true",
       });
@@ -924,17 +925,23 @@ export function App() {
             {panelMode === "add" ? (
               <div className="streamd-discovery">
                 <div className="streamd-discovery-search">
-                  <TextField
-                    value={radioCountry}
-                    onChange={(_event, value) => setRadioCountry(value || "")}
-                    placeholder="Country (for example Kenya)"
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") searchRadio();
-                    }}
-                  />
+                  <label className="streamd-filter streamd-discovery-country">
+                    Country
+                    <select
+                      value={radioCountry}
+                      onChange={(event) => setRadioCountry(event.target.value)}
+                    >
+                      <option value="">Select a country</option>
+                      {COUNTRY_OPTIONS.map((country) => (
+                        <option key={country.code} value={country.code}>
+                          {country.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <Button
-                    text={radioSearching ? "Searching..." : "Search by country"}
-                    disabled={radioSearching || !radioCountry.trim()}
+                    text={radioSearching ? "Searching..." : "Search"}
+                    disabled={radioSearching || !radioCountry}
                     onClick={searchRadio}
                   />
                 </div>

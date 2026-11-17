@@ -316,10 +316,10 @@ func TestMetricsEndpointAndCapacityEnforcement(t *testing.T) {
 func TestDiscoveryEndpoints(t *testing.T) {
 	addedID := uuid.NewString()
 	var upstreamPath string
-	var upstreamCountry string
+	var upstreamCountryCode string
 	upstream := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		upstreamPath = r.URL.Path
-		upstreamCountry = r.URL.Query().Get("country")
+		upstreamCountryCode = r.URL.Query().Get("countrycode")
 		writeJSON(rw, http.StatusOK, []RadioStation{{
 			StationUUID: addedID,
 			Name:        "Capital FM",
@@ -344,7 +344,7 @@ func TestDiscoveryEndpoints(t *testing.T) {
 		MaxResults:      10,
 	})
 
-	rr := serveRequest(t, ws, "/control/discovery/radio?country=Kenya&limit=5", nil)
+	rr := serveRequest(t, ws, "/control/discovery/radio?countrycode=KE&limit=5", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("search status = %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -358,8 +358,8 @@ func TestDiscoveryEndpoints(t *testing.T) {
 		response.Stations[0].ExistingStreamID != addedID {
 		t.Fatalf("stations = %+v", response.Stations)
 	}
-	if upstreamPath != "/json/stations/search" || upstreamCountry != "Kenya" {
-		t.Fatalf("upstream path = %q country = %q", upstreamPath, upstreamCountry)
+	if upstreamPath != "/json/stations/search" || upstreamCountryCode != "KE" {
+		t.Fatalf("upstream path = %q countrycode = %q", upstreamPath, upstreamCountryCode)
 	}
 
 	rr = serveRequest(t, ws, "/control/discovery/radio/"+addedID, nil)
