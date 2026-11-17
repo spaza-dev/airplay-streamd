@@ -617,7 +617,7 @@ streamd stream list --json
 
 streamd stream show 4ec5158e-5204-4fad-a329-da356b4b0a05
 
-streamd stream search --name "Capital" --limit 10
+streamd stream search --country Kenya --limit 10
 streamd stream add --radio-uuid 4ec5158e-5204-4fad-a329-da356b4b0a05 --enabled
 
 streamd stream add \
@@ -741,7 +741,7 @@ Returns the current host and per-stream metrics, a short in-memory history, and 
 ### Radio discovery
 
 ```http
-GET /control/discovery/radio?name=Capital&country=Kenya&limit=20
+GET /control/discovery/radio?country=Kenya&limit=20
 GET /control/discovery/radio/{stationuuid}
 ```
 
@@ -816,6 +816,8 @@ GET    /control/discovery/radio
 GET    /control/discovery/radio/{stationuuid}
 ```
 
+`GET /control/streams/{id}` returns the full stream record: UUID, source, name, type, URL, enabled/chunk settings, resolved audio/video config, metadata, full Radio Browser `radio` data when present, timestamps, and runtime status.
+
 Add/update request body:
 
 ```json
@@ -853,7 +855,7 @@ Examples:
 
 ```bash
 curl http://127.0.0.1:8787/control/streams
-curl 'http://127.0.0.1:8787/control/discovery/radio?name=Capital&limit=10'
+curl 'http://127.0.0.1:8787/control/discovery/radio?country=Kenya&limit=10'
 curl http://127.0.0.1:8787/control/streams/4ec5158e-5204-4fad-a329-da356b4b0a05
 
 curl -X POST http://127.0.0.1:8787/control/streams/4ec5158e-5204-4fad-a329-da356b4b0a05/stop
@@ -917,8 +919,8 @@ The dashboard is embedded in the binary and served at `/`.
 
 Main views:
 
-- **Streams**: name, UUID, type, source, recording state, enabled state, last activity, start/stop/restart actions, search, type/status filters, pagination.
-- **Add stream**: Radio Browser station search with one-click add, or a custom source form without a user-supplied ID.
+- **Streams**: name, UUID, type, country, source, recording state, enabled state, last activity, start/stop/restart actions, search, type/status/country filters, pagination.
+- **Add stream**: Radio Browser search by country with one-click add, or a custom source form without a user-supplied ID.
 - **Stream details drawer**: Overview (including CPU, memory, output rate and chunk rate), Metadata, Logs.
 - **System**: host CPU/memory/disk/network metrics, capacity recommendation, limiting-resource bars, CPU/network/backlog sparklines, and per-stream usage.
 - **Logs**: service-wide or per-stream, with level and search filters.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -315,8 +316,10 @@ func TestMetricsEndpointAndCapacityEnforcement(t *testing.T) {
 func TestDiscoveryEndpoints(t *testing.T) {
 	addedID := uuid.NewString()
 	var upstreamPath string
+	var upstreamCountry string
 	upstream := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		upstreamPath = r.URL.Path
+		upstreamCountry = r.URL.Query().Get("country")
 		writeJSON(rw, http.StatusOK, []RadioStation{{
 			StationUUID: addedID,
 			Name:        "Capital FM",
@@ -341,7 +344,7 @@ func TestDiscoveryEndpoints(t *testing.T) {
 		MaxResults:      10,
 	})
 
-	rr := serveRequest(t, ws, "/control/discovery/radio?name=Capital&limit=5", nil)
+	rr := serveRequest(t, ws, "/control/discovery/radio?country=Kenya&limit=5", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("search status = %d body=%s", rr.Code, rr.Body.String())
 	}
@@ -355,8 +358,8 @@ func TestDiscoveryEndpoints(t *testing.T) {
 		response.Stations[0].ExistingStreamID != addedID {
 		t.Fatalf("stations = %+v", response.Stations)
 	}
-	if upstreamPath != "/json/stations/search" {
-		t.Fatalf("upstream path = %q", upstreamPath)
+	if upstreamPath != "/json/stations/search" || upstreamCountry != "Kenya" {
+		t.Fatalf("upstream path = %q country = %q", upstreamPath, upstreamCountry)
 	}
 
 	rr = serveRequest(t, ws, "/control/discovery/radio/"+addedID, nil)
@@ -429,5 +432,80 @@ func TestAddStreamAssignsUUIDs(t *testing.T) {
 		Radio: &RadioStation{StationUUID: stationUUID, Name: "Capital FM", URL: "https://example.com/capital"},
 	}); !errors.Is(err, ErrStreamConflict) {
 		t.Fatalf("duplicate station error = %v", err)
+	}
+}
+
+func TestAddRadioAndGetFullStream(t *testing.T) {
+	_, ws := newWebTestApp(t, nil, "")
+	stationUUID := uuid.NewString()
+	payload, err := json.Marshal(map[string]any{
+		"enabled": false,
+		"radio": map[string]any{
+			"stationuuid":  stationUUID,
+			"name":         "Capital FM",
+			"url":          "https://example.com/capital",
+			"url_resolved": "https://example.com/capital.mp3",
+			"homepage":     "https://capital.example.com",
+			"favicon":      "https://capital.example.com/favicon.png",
+			"tags":         "hits,pop",
+			"country":      "Kenya",
+			"countrycode":  "KE",
+			"state":        "Nairobi",
+			"language":     "English",
+			"codec":        "MP3",
+			"bitrate":      128,
+			"hls":          0,
+			"lastcheckok":  1,
+			"votes":        42,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler, err := ws.handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/control/streams", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("add status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ID != stationUUID {
+		t.Fatalf("created id = %q", created.ID)
+	}
+
+	rr = serveRequest(t, ws, "/control/streams/"+created.ID, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var view StreamView
+	if err := json.Unmarshal(rr.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.ID != stationUUID || view.Source != "radio-browser" {
+		t.Fatalf("view identity = %+v", view)
+	}
+	if view.Radio == nil {
+		t.Fatal("full stream response is missing radio data")
+	}
+	if view.Radio.Country != "Kenya" || view.Radio.CountryCode != "KE" ||
+		view.Radio.Codec != "MP3" || view.Radio.Bitrate != 128 || !view.Radio.IsHealthy() {
+		t.Fatalf("radio data = %+v", view.Radio)
+	}
+	if view.Metadata["country"] != "Kenya" || view.Metadata["source"] != "radio-browser" {
+		t.Fatalf("metadata = %+v", view.Metadata)
+	}
+	if view.CreatedAt.IsZero() || view.UpdatedAt.IsZero() {
+		t.Fatalf("timestamps = created=%v updated=%v", view.CreatedAt, view.UpdatedAt)
 	}
 }

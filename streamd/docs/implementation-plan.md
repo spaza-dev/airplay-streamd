@@ -176,10 +176,10 @@ JSON emits runtime `running`, `stopped`, `error`, `last_activity`. Uploader resp
 
 - React 16.14 + TS + Vite + `azure-devops-ui`, ADO light theme.
 - Centered content, max width ~1400px, dense layout, minimal decoration.
-- **Streams view:** table with name/ID, type, status, enabled, last activity, start/stop/restart; search, status/type filters, pagination; uploader status strip.
+- **Streams view:** table with name/ID, type, country, status, enabled, last activity, start/stop/restart; search, status/type/country filters, pagination; uploader status strip.
 - **Stream drawer (`Panel`):** Overview, Metadata, Logs tabs.
 - **Logs view:** service and per-stream logs with search/level filter.
-- Add/Edit/Delete stream dialogs; Radio Browser search with one-click add; polling refresh.
+- Add/Edit/Delete stream dialogs; Radio Browser search by country with one-click add; polling refresh.
 - Build output embedded with `//go:embed all:web/dist`.
 
 ## 11. Deployment

@@ -132,6 +132,12 @@ function streamState(stream: StreamView): string {
   return "idle";
 }
 
+function streamCountry(stream: StreamView): string {
+  if (stream.radio?.country) return stream.radio.country.trim();
+  const country = stream.metadata?.country;
+  return typeof country === "string" ? country.trim() : "";
+}
+
 function stateLabel(state: string): string {
   switch (state) {
     case "running":
@@ -181,6 +187,7 @@ export function App() {
   const [search, setSearch] = React.useState("");
   const [typeFilter, setTypeFilter] = React.useState("all");
   const [statusFilter, setStatusFilter] = React.useState("all");
+  const [countryFilter, setCountryFilter] = React.useState("all");
   const [page, setPage] = React.useState(0);
 
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
@@ -194,7 +201,7 @@ export function App() {
 
   const [panelMode, setPanelMode] = React.useState<PanelMode>("closed");
   const [form, setForm] = React.useState<StreamForm>(emptyForm());
-  const [radioQuery, setRadioQuery] = React.useState("");
+  const [radioCountry, setRadioCountry] = React.useState("");
   const [radioResults, setRadioResults] = React.useState<DiscoveryStation[]>([]);
   const [radioSearching, setRadioSearching] = React.useState(false);
 
@@ -292,17 +299,31 @@ export function App() {
 
   React.useEffect(() => {
     setPage(0);
-  }, [search, typeFilter, statusFilter]);
+  }, [search, typeFilter, statusFilter, countryFilter]);
+
+  const countries = React.useMemo(
+    () =>
+      Array.from(new Set(streams.map(streamCountry).filter(Boolean))).sort((a, b) =>
+        a.localeCompare(b)
+      ),
+    [streams]
+  );
 
   const filtered = streams.filter((stream) => {
     const query = search.trim().toLowerCase();
-    if (query && !`${stream.id} ${stream.name} ${stream.type}`.toLowerCase().includes(query)) {
+    if (
+      query &&
+      !`${stream.id} ${stream.name} ${stream.type} ${streamCountry(stream)}`.toLowerCase().includes(query)
+    ) {
       return false;
     }
     if (typeFilter !== "all" && stream.type !== typeFilter) {
       return false;
     }
     if (statusFilter !== "all" && streamState(stream) !== statusFilter) {
+      return false;
+    }
+    if (countryFilter !== "all" && streamCountry(stream) !== countryFilter) {
       return false;
     }
     return true;
@@ -361,7 +382,7 @@ export function App() {
   const openAdd = () => {
     setSelectedId(null);
     setForm(emptyForm());
-    setRadioQuery("");
+    setRadioCountry("");
     setRadioResults([]);
     setPanelMode("add");
   };
@@ -424,7 +445,11 @@ export function App() {
     setRadioSearching(true);
     setError("");
     try {
-      const data = await api.searchRadio({ name: radioQuery.trim(), limit: 25, hidebroken: "true" });
+      const data = await api.searchRadio({
+        country: radioCountry.trim(),
+        limit: 50,
+        hidebroken: "true",
+      });
       setRadioResults(data.stations);
     } catch (e) {
       setError((e as Error).message);
@@ -437,7 +462,8 @@ export function App() {
     setBusy(true);
     setError("");
     try {
-      const result = await api.add({ radio: station, enabled: form.enabled });
+      const { already_added, existing_stream_id, ...radio } = station;
+      const result = await api.add({ radio, enabled: form.enabled });
       setNotice(`Stream ${result.id} added`);
       if (result.warnings && result.warnings.length > 0) {
         setWarning(result.warnings.join(" "));
@@ -517,7 +543,7 @@ export function App() {
             <div className="streamd-toolbar">
               <TextField
                 className="streamd-search"
-                placeholder="Search streams by id, name or type"
+                placeholder="Search streams by id, name, type or country"
                 value={search}
                 onChange={(_event, value) => setSearch(value || "")}
               />
@@ -543,6 +569,17 @@ export function App() {
                   <option value="idle">Idle</option>
                 </select>
               </label>
+              <label className="streamd-filter">
+                Country
+                <select value={countryFilter} onChange={(e) => setCountryFilter(e.target.value)}>
+                  <option value="all">All</option>
+                  {countries.map((country) => (
+                    <option key={country} value={country}>
+                      {country}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <div className="streamd-toolbar-spacer" />
               <span className="streamd-muted">{filtered.length} streams</span>
             </div>
@@ -558,6 +595,7 @@ export function App() {
                     <th>Name</th>
                     <th>ID</th>
                     <th>Type</th>
+                    <th>Country</th>
                     <th>Status</th>
                     <th>Enabled</th>
                     <th>Last activity</th>
@@ -575,6 +613,7 @@ export function App() {
                         </td>
                         <td className="streamd-mono">{stream.id}</td>
                         <td>{stream.type}</td>
+                        <td>{streamCountry(stream) || "-"}</td>
                         <td>
                           <span className={`streamd-status ${stateTone(state)}`}>
                             <span className="streamd-dot" />
@@ -633,7 +672,7 @@ export function App() {
                   })}
                   {pageRows.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="streamd-empty">
+                      <td colSpan={8} className="streamd-empty">
                         No streams match the current filters.
                       </td>
                     </tr>
@@ -741,12 +780,10 @@ export function App() {
                 </Definition>
                 <Definition label="Source type">{selected.type}</Definition>
                 <Definition label="Source">{selected.source || "custom"}</Definition>
+                <Definition label="Country">{streamCountry(selected) || "-"}</Definition>
                 {selected.radio ? (
                   <>
                     <Definition label="Station">{selected.radio.name}</Definition>
-                    <Definition label="Country">
-                      {selected.radio.country || "-"} {selected.radio.countrycode ? `(${selected.radio.countrycode})` : ""}
-                    </Definition>
                     <Definition label="Codec">
                       {selected.radio.codec || "-"} {selected.radio.bitrate ? `· ${selected.radio.bitrate} kbps` : ""}
                     </Definition>
@@ -839,16 +876,16 @@ export function App() {
               <div className="streamd-discovery">
                 <div className="streamd-discovery-search">
                   <TextField
-                    value={radioQuery}
-                    onChange={(_event, value) => setRadioQuery(value || "")}
-                    placeholder="Search Radio Browser by station name"
+                    value={radioCountry}
+                    onChange={(_event, value) => setRadioCountry(value || "")}
+                    placeholder="Country (for example Kenya)"
                     onKeyDown={(event) => {
                       if (event.key === "Enter") searchRadio();
                     }}
                   />
                   <Button
-                    text={radioSearching ? "Searching..." : "Search radio"}
-                    disabled={radioSearching || !radioQuery.trim()}
+                    text={radioSearching ? "Searching..." : "Search by country"}
+                    disabled={radioSearching || !radioCountry.trim()}
                     onClick={searchRadio}
                   />
                 </div>
