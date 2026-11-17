@@ -180,6 +180,14 @@ func (s *Store) Counts() (map[string]int, error) {
 	return counts, rows.Err()
 }
 
+func (s *Store) BacklogBytes() (int64, error) {
+	var total int64
+	err := s.db.QueryRow(
+		`SELECT COALESCE(SUM(file_size), 0) FROM uploads WHERE status IN ('pending', 'uploading', 'failed')`,
+	).Scan(&total)
+	return total, err
+}
+
 func (s *Store) List(status string, limit int) ([]QueueItem, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
@@ -524,6 +532,13 @@ func (u *Uploader) Status() (UploaderStatus, error) {
 
 func (u *Uploader) Queue(status string, limit int) ([]QueueItem, error) {
 	return u.store.List(status, limit)
+}
+
+func (u *Uploader) BacklogBytes() (int64, error) {
+	if u == nil || u.store == nil {
+		return 0, nil
+	}
+	return u.store.BacklogBytes()
 }
 
 func (u *Uploader) PublishMeta(stream StreamConfig) {

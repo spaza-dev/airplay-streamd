@@ -1,5 +1,6 @@
 import {
   LogEntry,
+  MetricsSnapshot,
   QueueItem,
   StreamsResponse,
   StreamView,
@@ -46,8 +47,12 @@ export const api = {
     if (params.limit) query.set("limit", String(params.limit));
     return request<{ entries: LogEntry[] }>(`/control/logs?${query.toString()}`);
   },
-  start(id: string): Promise<{ ok: boolean }> {
-    return request(`/control/streams/${encodeURIComponent(id)}/start`, { method: "POST" });
+  metrics(): Promise<MetricsSnapshot> {
+    return request<MetricsSnapshot>("/control/metrics");
+  },
+  start(id: string, force = false): Promise<{ ok: boolean }> {
+    const suffix = force ? "?force=true" : "";
+    return request(`/control/streams/${encodeURIComponent(id)}/start${suffix}`, { method: "POST" });
   },
   stop(id: string): Promise<{ ok: boolean }> {
     return request(`/control/streams/${encodeURIComponent(id)}/stop`, { method: "POST" });
@@ -58,7 +63,7 @@ export const api = {
   remove(id: string): Promise<{ ok: boolean }> {
     return request(`/control/streams/${encodeURIComponent(id)}`, { method: "DELETE" });
   },
-  add(stream: unknown): Promise<{ ok: boolean; id: string }> {
+  add(stream: unknown): Promise<{ ok: boolean; id: string; warnings?: string[] }> {
     return request("/control/streams", { method: "POST", body: JSON.stringify(stream) });
   },
   update(id: string, stream: unknown): Promise<{ ok: boolean }> {

@@ -8,7 +8,7 @@ import { Panel } from "azure-devops-ui/Panel";
 import { Spinner } from "azure-devops-ui/Spinner";
 import { MessageBar, MessageBarSeverity } from "azure-devops-ui/MessageBar";
 import { api } from "./api";
-import { LogEntry, StreamView, UploaderStatus } from "./types";
+import { LogEntry, MetricsSnapshot, StreamView, UploaderStatus } from "./types";
 
 const STREAM_TYPES = ["radio", "tv", "hls", "direct", "youtube", "twitch", "web"];
 const LOG_LEVELS = ["debug", "info", "warn", "error"];
@@ -83,6 +83,50 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function formatBytes(bytes: number): string {
+  if (!bytes || bytes < 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index++;
+  }
+  return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function formatRate(bytesPerSecond: number): string {
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+function formatBitrate(bytesPerSecond: number): string {
+  if (!bytesPerSecond || bytesPerSecond <= 0) return "-";
+  return `${((bytesPerSecond * 8) / 1000).toFixed(0)} kbps`;
+}
+
+function formatPercent(value: number): string {
+  return `${value.toFixed(1)}%`;
+}
+
+const emptyCapacity = {
+  status: "insufficient",
+  recommended_additional_streams: 0,
+  confidence: "insufficient",
+  active_streams: 0,
+  resources: [],
+  message: "Collecting system metrics...",
+};
+
+function emptyMetrics(): MetricsSnapshot {
+  return {
+    enabled: false,
+    interval_seconds: 0,
+    history: [],
+    streams: [],
+    capacity: emptyCapacity,
+  };
+}
+
 function streamState(stream: StreamView): string {
   if (!stream.enabled) return "disabled";
   if (stream.error) return "error";
@@ -129,8 +173,10 @@ export function App() {
     active: 0,
     counts: {},
   });
+  const [metrics, setMetrics] = React.useState<MetricsSnapshot>(emptyMetrics());
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+  const [warning, setWarning] = React.useState("");
   const [notice, setNotice] = React.useState("");
   const [busy, setBusy] = React.useState(false);
 
@@ -158,6 +204,11 @@ export function App() {
       setStreams(data.streams);
       setUploader(data.uploader);
       setError("");
+      try {
+        setMetrics(await api.metrics());
+      } catch {
+        // metrics are optional and must not break stream management
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -176,6 +227,12 @@ export function App() {
     const timer = window.setTimeout(() => setNotice(""), 4000);
     return () => window.clearTimeout(timer);
   }, [notice]);
+
+  React.useEffect(() => {
+    if (!warning) return;
+    const timer = window.setTimeout(() => setWarning(""), 10000);
+    return () => window.clearTimeout(timer);
+  }, [warning]);
 
   const selected = React.useMemo(
     () => streams.find((stream) => stream.id === selectedId) || null,
@@ -269,6 +326,31 @@ export function App() {
     }
   };
 
+  const startStream = async (id: string) => {
+    setBusy(true);
+    setError("");
+    try {
+      try {
+        await api.start(id);
+      } catch (e) {
+        const message = (e as Error).message;
+        if (!/capacity/i.test(message)) {
+          throw e;
+        }
+        if (!window.confirm(`${message}\n\nStart anyway?`)) {
+          return;
+        }
+        await api.start(id, true);
+      }
+      setNotice(`Started ${id}`);
+      await refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const openDetail = (stream: StreamView) => {
     setSelectedId(stream.id);
     setDetailTab("overview");
@@ -322,8 +404,11 @@ export function App() {
         await api.update(editing.id, payload);
         setNotice(`Stream ${editing.id} updated`);
       } else {
-        await api.add(payload);
+        const result = await api.add(payload);
         setNotice(`Stream ${payload.id} added`);
+        if (result.warnings && result.warnings.length > 0) {
+          setWarning(result.warnings.join(" "));
+        }
       }
       setPanelMode("closed");
       setSelectedId(null);
@@ -337,6 +422,10 @@ export function App() {
 
   const counts = uploader.counts || {};
   const selectedState = selected ? streamState(selected) : "";
+  const selectedMetrics = React.useMemo(
+    () => metrics.streams.find((stream) => stream.id === selectedId) || null,
+    [metrics, selectedId]
+  );
 
   return (
     <Page className="streamd-page">
@@ -369,6 +458,11 @@ export function App() {
             {error}
           </MessageBar>
         ) : null}
+        {warning ? (
+          <MessageBar severity={MessageBarSeverity.Warning} onDismiss={() => setWarning("")}>
+            {warning}
+          </MessageBar>
+        ) : null}
         {notice ? (
           <MessageBar severity={MessageBarSeverity.Success} onDismiss={() => setNotice("")}>
             {notice}
@@ -382,6 +476,7 @@ export function App() {
           tabSize={TabSize.Compact}
         >
           <Tab id="streams" name="Streams" />
+          <Tab id="system" name="System" />
           <Tab id="logs" name="Logs" />
         </TabBar>
 
@@ -475,9 +570,7 @@ export function App() {
                                 text="Start"
                                 subtle
                                 disabled={busy}
-                                onClick={() =>
-                                  runAction(() => api.start(stream.id), `Started ${stream.id}`)
-                                }
+                                onClick={() => startStream(stream.id)}
                               />
                             )}
                             <Button
@@ -535,6 +628,8 @@ export function App() {
               />
             </div>
           </div>
+        ) : tab === "system" ? (
+          <SystemView metrics={metrics} streams={streams} />
         ) : (
           <div className="streamd-content">
             <div className="streamd-toolbar">
@@ -588,7 +683,7 @@ export function App() {
                   }
                 : {
                     text: "Start",
-                    onClick: () => runAction(() => api.start(selected.id), `Started ${selected.id}`),
+                    onClick: () => startStream(selected.id),
                   },
               { text: "Edit", onClick: () => openEdit(selected) },
             ]}
@@ -619,6 +714,19 @@ export function App() {
                 <Definition label="Enabled">{selected.enabled ? "Yes" : "No"}</Definition>
                 <Definition label="Chunk seconds">{selected.chunk_seconds}</Definition>
                 <Definition label="Last activity">{formatTime(selected.last_activity)}</Definition>
+                {selectedMetrics ? (
+                  <>
+                    <Definition label="CPU">{formatPercent(selectedMetrics.cpu_percent)}</Definition>
+                    <Definition label="Memory">{formatBytes(selectedMetrics.memory_bytes)}</Definition>
+                    <Definition label="Output rate">
+                      {formatRate(selectedMetrics.output_bytes_per_sec)}
+                    </Definition>
+                    <Definition label="Chunks / min">
+                      {selectedMetrics.chunks_per_minute.toFixed(1)}
+                    </Definition>
+                    <Definition label="Last chunk">{formatTime(selectedMetrics.last_chunk_at)}</Definition>
+                  </>
+                ) : null}
                 {selected.error ? (
                   <Definition label="Error">
                     <span className="streamd-error-text">{selected.error}</span>
@@ -757,11 +865,251 @@ export function App() {
   );
 }
 
-function Metric(props: { label: string; value: number; tone: string }) {
+function Metric(props: {
+  label: string;
+  value: React.ReactNode;
+  tone: string;
+  hint?: React.ReactNode;
+}) {
   return (
     <div className="streamd-metric">
       <div className={`streamd-metric-value ${props.tone}`}>{props.value}</div>
       <div className="streamd-metric-label">{props.label}</div>
+      {props.hint ? <div className="streamd-metric-hint">{props.hint}</div> : null}
+    </div>
+  );
+}
+
+function capacityTone(status: string): string {
+  switch (status) {
+    case "ok":
+      return "success";
+    case "warning":
+      return "warning";
+    case "at_capacity":
+      return "error";
+    default:
+      return "muted";
+  }
+}
+
+function capacityLabel(status: string): string {
+  switch (status) {
+    case "ok":
+      return "Healthy";
+    case "warning":
+      return "Limited headroom";
+    case "at_capacity":
+      return "At capacity";
+    default:
+      return "Collecting";
+  }
+}
+
+function resourceValue(resource: { unit: string; used: number; limit: number }): string {
+  if (resource.unit === "percent") {
+    return `${resource.used.toFixed(1)}% / ${resource.limit.toFixed(0)}%`;
+  }
+  if (resource.unit === "bytes_per_sec") {
+    return `${formatRate(resource.used)} / ${formatRate(resource.limit)}`;
+  }
+  return `${formatBytes(resource.used)} / ${formatBytes(resource.limit)}`;
+}
+
+function Sparkline(props: { values: number[]; tone?: string }) {
+  const values = props.values.filter((value) => Number.isFinite(value));
+  if (values.length < 2) {
+    return <div className="streamd-sparkline-empty">-</div>;
+  }
+  const width = 120;
+  const height = 28;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const points = values
+    .map((value, index) => {
+      const x = (index / (values.length - 1)) * width;
+      const y = height - ((value - min) / span) * height;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <svg className={`streamd-sparkline ${props.tone || "info"}`} viewBox={`0 0 ${width} ${height}`}>
+      <polyline points={points} />
+    </svg>
+  );
+}
+
+function SystemView(props: { metrics: MetricsSnapshot; streams: StreamView[] }) {
+  const current = props.metrics.current;
+  const capacity = props.metrics.capacity;
+  const history = props.metrics.history || [];
+  const streamMetrics = props.metrics.streams || [];
+  const stateByID = React.useMemo(() => {
+    const map: Record<string, StreamView> = {};
+    props.streams.forEach((stream) => {
+      map[stream.id] = stream;
+    });
+    return map;
+  }, [props.streams]);
+
+  if (!props.metrics.enabled) {
+    return (
+      <div className="streamd-content">
+        <p className="streamd-muted">
+          Metrics collection is disabled. Enable <code>metrics.enabled</code> in the configuration to
+          see capacity information.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="streamd-content">
+      <div className="streamd-system-strip">
+        <Metric label="Active streams" value={current ? current.active_streams : "-"} tone="info" />
+        <Metric
+          label="CPU"
+          value={current ? formatPercent(current.cpu_percent) : "-"}
+          tone={(current?.cpu_percent || 0) >= 80 ? "error" : "success"}
+          hint={current ? `load ${current.load_1.toFixed(2)}` : ""}
+        />
+        <Metric
+          label="Memory"
+          value={current ? formatBytes(current.memory_used_bytes) : "-"}
+          tone="info"
+          hint={current ? `of ${formatBytes(current.memory_total_bytes)}` : ""}
+        />
+        <Metric
+          label="Disk free"
+          value={current ? formatBytes(current.disk_free_bytes) : "-"}
+          tone="info"
+          hint={current ? `of ${formatBytes(current.disk_total_bytes)}` : ""}
+        />
+        <Metric
+          label="Network RX"
+          value={current ? formatRate(current.net_rx_bytes_per_sec) : "-"}
+          tone="info"
+        />
+        <Metric
+          label="Network TX"
+          value={current ? formatRate(current.net_tx_bytes_per_sec) : "-"}
+          tone="info"
+        />
+        <Metric
+          label="Can add"
+          value={
+            capacity.recommended_additional_streams >= 9999
+              ? "not limiting"
+              : capacity.recommended_additional_streams || 0
+          }
+          tone={capacityTone(capacity.status)}
+          hint={`${capacityLabel(capacity.status)} · ${capacity.confidence}`}
+        />
+      </div>
+
+      <div className="streamd-capacity">
+        <div className="streamd-capacity-header">
+          <div>
+            <div className="streamd-section-title">Capacity</div>
+            <div className="streamd-muted">
+              {capacity.message || "Waiting for the first metrics sample."}
+            </div>
+          </div>
+          <span className={`streamd-pill ${capacityTone(capacity.status)}`}>
+            {capacityLabel(capacity.status)}
+          </span>
+        </div>
+        <div className="streamd-resource-list">
+          {(capacity.resources || []).map((resource) => (
+            <div className="streamd-resource" key={resource.name}>
+              <div className="streamd-resource-head">
+                <span className="streamd-resource-name">
+                  {resource.name}
+                  {resource.limiting ? <span className="streamd-resource-tag">bottleneck</span> : null}
+                </span>
+                <span className="streamd-muted">{resourceValue(resource)}</span>
+              </div>
+              <div className="streamd-bar">
+                <div
+                  className={`streamd-bar-fill ${capacityTone(
+                    resource.used_percent >= 100 ? "at_capacity" : resource.used_percent >= 85 ? "warning" : "ok"
+                  )}`}
+                  style={{ width: `${Math.min(100, Math.max(0, resource.used_percent))}%` }}
+                />
+              </div>
+              <div className="streamd-resource-foot">
+                <span className="streamd-muted">
+                  {resource.additional_streams >= 9999
+                    ? "not limiting"
+                    : `${resource.additional_streams} more stream(s)`}
+                </span>
+              </div>
+            </div>
+          ))}
+          {(capacity.resources || []).length === 0 ? (
+            <p className="streamd-muted">No capacity data yet.</p>
+          ) : null}
+        </div>
+        <div className="streamd-sparkline-row">
+          <div>
+            <div className="streamd-muted streamd-small">CPU history</div>
+            <Sparkline values={history.map((point) => point.cpu_percent)} tone="success" />
+          </div>
+          <div>
+            <div className="streamd-muted streamd-small">Network RX history</div>
+            <Sparkline values={history.map((point) => point.net_rx_bytes_per_sec)} tone="info" />
+          </div>
+          <div>
+            <div className="streamd-muted streamd-small">Backlog history</div>
+            <Sparkline values={history.map((point) => point.backlog_bytes)} tone="warning" />
+          </div>
+        </div>
+      </div>
+
+      <div className="streamd-section-title streamd-section-spaced">Per-stream usage</div>
+      <table className="streamd-table">
+        <thead>
+          <tr>
+            <th>Stream</th>
+            <th>Status</th>
+            <th>CPU</th>
+            <th>Memory</th>
+            <th>Output rate</th>
+            <th>Chunks / min</th>
+            <th>Last chunk</th>
+          </tr>
+        </thead>
+        <tbody>
+          {streamMetrics.map((stream) => {
+            const view = stateByID[stream.id];
+            const state = view ? streamState(view) : "idle";
+            return (
+              <tr key={stream.id}>
+                <td className="streamd-mono">{stream.id}</td>
+                <td>
+                  <span className={`streamd-status ${stateTone(state)}`}>
+                    <span className="streamd-dot" />
+                    {stateLabel(state)}
+                  </span>
+                </td>
+                <td>{formatPercent(stream.cpu_percent)}</td>
+                <td>{formatBytes(stream.memory_bytes)}</td>
+                <td>{formatBitrate(stream.output_bytes_per_sec)}</td>
+                <td>{stream.chunks_per_minute.toFixed(1)}</td>
+                <td>{formatTime(stream.last_chunk_at)}</td>
+              </tr>
+            );
+          })}
+          {streamMetrics.length === 0 ? (
+            <tr>
+              <td colSpan={7} className="streamd-empty">
+                No running streams have metrics yet.
+              </td>
+            </tr>
+          ) : null}
+        </tbody>
+      </table>
     </div>
   );
 }

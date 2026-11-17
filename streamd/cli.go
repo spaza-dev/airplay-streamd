@@ -341,6 +341,11 @@ func cmdStreamAdd(args []string) error {
 		return printJSON(out)
 	}
 	fmt.Printf("stream %s added\n", stream.ID)
+	if warnings, ok := out["warnings"].([]any); ok {
+		for _, warning := range warnings {
+			fmt.Printf("warning: %v\n", warning)
+		}
+	}
 	return nil
 }
 
@@ -419,6 +424,7 @@ func cmdStreamAction(args []string, action string) error {
 	fs := newFlagSet("stream " + action)
 	var g globalFlags
 	addGlobalFlags(fs, &g)
+	force := fs.Bool("force", false, "start even when the server is at capacity")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -433,6 +439,9 @@ func cmdStreamAction(args []string, action string) error {
 	client := clientForConfig(cfg)
 	method := "POST"
 	path := "/control/streams/" + url.PathEscape(id) + "/" + action
+	if action == "start" && *force {
+		path += "?force=true"
+	}
 	if action == "remove" {
 		method = "DELETE"
 		path = "/control/streams/" + url.PathEscape(id)

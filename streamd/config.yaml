@@ -4,7 +4,7 @@ server:
   admin_token: "${STREAMD_ADMIN_TOKEN}"
 
 recording:
-  chunk_seconds: 300
+  chunk_seconds: 3600
   output_dir: "/var/lib/streamd/chunks"
 
   ffmpeg_path: "/usr/bin/ffmpeg"
@@ -52,12 +52,30 @@ logging:
   level: "info"
   file: "/var/log/streamd/streamd.log"
 
+metrics:
+  enabled: true
+  sample_interval_seconds: 5
+  history_seconds: 300
+
+capacity:
+  enforce: true
+  cpu_target_percent: 80
+  memory_target_percent: 85
+  disk_target_percent: 85
+  network_target_percent: 80
+  # Set to your real uplink/downlink capacity in Mbps to include network headroom.
+  network_mbps: 0
+  disk_horizon_hours: 24
+  min_free_disk_gb: 1
+  assumed_cpu_per_stream_percent: 1.5
+  assumed_memory_per_stream_mb: 64
+
 streams:
   - id: "capital-fm-ke"
     name: "Capital FM Kenya"
     type: "radio"
     url: "https://atunwadigital.streamguys1.com/capitalfm"
-    enabled: false
+    enabled: true
 
     metadata:
       country: "Kenya"
@@ -78,7 +96,7 @@ streams:
     name: "Classic 105"
     type: "radio"
     url: "https://classic105-atunwadigital.streamguys1.com/classic105"
-    enabled: false
+    enabled: true
 
     metadata:
       country: "Kenya"
@@ -99,7 +117,7 @@ streams:
     name: "Kiss100"
     type: "radio"
     url: "https://atunwadigital.streamguys1.com/kiss100fm"
-    enabled: false
+    enabled: true
 
     metadata:
       country: "Kenya"
@@ -135,7 +153,7 @@ streams:
     name: "KBC Mayienga FM"
     type: "radio"
     url: "https://mayianfm-atunwadigital.streamguys1.com/mayianfm"
-    enabled: false
+    enabled: true
 
     metadata:
       country: "Kenya"
@@ -170,7 +188,7 @@ streams:
     name: "Easy FM 101.5"
     type: "radio"
     url: "https://stream.zeno.fm/wvw02zaqpxquv"
-    enabled: false
+    enabled: true
 
     metadata:
       country: "Kenya"

@@ -56,7 +56,9 @@ The authoritative development specification is in [`docs/streamd-requirements.md
 - No per-chunk metadata sidecar files.
 - CLI commands for stream management and logs.
 - A read-only public `/api/streams` API with optional bearer authentication and Swagger UI.
-- Embedded dashboard with streams, filters, drawer details, logs, and uploader indicators.
+- Built-in CPU, memory, disk, network, backlog and per-stream usage metrics.
+- A capacity estimate that identifies the limiting resource and recommends how many additional streams fit.
+- Embedded dashboard with streams, filters, drawer details, system metrics, logs, and uploader indicators.
 - Systemd service and socket activation for `/run/streamd.sock`.
 - Install and update scripts that preserve configuration, secrets, chunks, and the queue.
 
@@ -101,9 +103,11 @@ The daemon owns all recording and upload processes. CLI commands only send contr
     ├── main.go                 # config, logging, runtime state, lifecycle
     ├── recorder.go             # stream manager, FFmpeg/yt-dlp workers
     ├── storage.go              # SQLite queue, S3 uploader, metadata publisher
+    ├── metrics.go              # /proc sampling, capacity estimate, enforcement
     ├── web.go                  # HTTP/Unix API and embedded frontend
     ├── cli.go                  # CLI client and commands
     ├── config_test.go
+    ├── metrics_test.go
     ├── storage_test.go
     ├── config.yaml             # default system configuration
     ├── .env.example            # R2/S3 credential template
@@ -293,6 +297,24 @@ logging:
   level: "info"
   file: "/var/log/streamd/streamd.log"
 
+metrics:
+  enabled: true
+  sample_interval_seconds: 5
+  history_seconds: 300
+
+capacity:
+  enforce: true
+  cpu_target_percent: 80
+  memory_target_percent: 85
+  disk_target_percent: 85
+  network_target_percent: 80
+  # Set to your real uplink/downlink capacity in Mbps to include network headroom.
+  network_mbps: 0
+  disk_horizon_hours: 24
+  min_free_disk_gb: 1
+  assumed_cpu_per_stream_percent: 1.5
+  assumed_memory_per_stream_mb: 64
+
 streams:
   - id: "capital-fm-ke"
     name: "Capital FM Kenya"
@@ -365,6 +387,30 @@ The HTTP server binds to localhost by default. Do not expose it publicly without
 | `recording.video.*` | see above | Defaults for all streams. |
 
 Reconnect delay grows exponentially from the initial value to the maximum after a recording process exits unexpectedly. A session that lasts longer than two minutes resets the delay.
+
+### Metrics and capacity settings
+
+| Key | Default | Description |
+|---|---|---|
+| `metrics.enabled` | `true` | Enables in-process metrics sampling and the System dashboard view. |
+| `metrics.sample_interval_seconds` | `5` | How often `/proc`, disk, queue, and per-stream usage are sampled. |
+| `metrics.history_seconds` | `300` | In-memory history window used for rates and sparklines. |
+| `capacity.enforce` | `true` | Blocks explicit start requests when a measured server is at capacity. |
+| `capacity.cpu_target_percent` | `80` | Maximum CPU budget used for capacity calculations. |
+| `capacity.memory_target_percent` | `85` | Maximum memory budget used for capacity calculations. |
+| `capacity.disk_target_percent` | `85` | Disk usage ceiling used for capacity calculations. |
+| `capacity.network_target_percent` | `80` | Network budget used when `network_mbps` is set. |
+| `capacity.network_mbps` | `0` | Nominal network capacity in Mbps. `0` excludes network from the bottleneck estimate. |
+| `capacity.disk_horizon_hours` | `24` | Backlog growth is projected over this horizon for disk headroom. |
+| `capacity.min_free_disk_gb` | `1` | Minimum free disk space kept outside the capacity estimate. |
+| `capacity.assumed_cpu_per_stream_percent` | `1.5` | CPU cost used when no running streams have been measured yet. |
+| `capacity.assumed_memory_per_stream_mb` | `64` | Memory cost used when no running streams have been measured yet. |
+
+Metrics are sampled from `/proc/stat`, `/proc/meminfo`, `/proc/net/dev`, `/proc/<pid>`, the chunk output directory, and the upload queue. No external agent is required.
+
+Capacity is reported as a recommended number of additional streams plus the limiting resource. The estimate uses measured per-stream CPU, memory, and output rate when streams are running, and falls back to the configured assumptions when they are not. Network is only treated as a bottleneck when `capacity.network_mbps` is set.
+
+When `capacity.enforce` is enabled, explicit start requests are rejected with `409 Conflict` if a measured server is at capacity. Startup auto-starts are never blocked. Add-stream requests are allowed but return warnings. Use `streamd stream start --force <id>` or `POST /control/streams/{id}/start?force=true` to override.
 
 ### Audio options
 
@@ -583,6 +629,7 @@ streamd stream update --enabled false capital-fm-ke
 streamd stream update --chunk-seconds 600 capital-fm-ke
 
 streamd stream start capital-fm-ke
+streamd stream start --force capital-fm-ke   # override capacity enforcement
 streamd stream stop capital-fm-ke
 streamd stream restart capital-fm-ke
 streamd stream remove capital-fm-ke
@@ -661,7 +708,45 @@ GET /health
 GET /control/status
 ```
 
-Returns version, uptime, stream count, and uploader status.
+Returns version, uptime, stream count, uploader status, and a compact capacity summary.
+
+### Metrics
+
+```http
+GET /control/metrics
+```
+
+Returns the current host and per-stream metrics, a short in-memory history, and the capacity estimate. This endpoint is part of the localhost/socket control plane and is not exposed through the public `/api/*` API.
+
+```json
+{
+  "enabled": true,
+  "interval_seconds": 5,
+  "current": {
+    "time": "2026-11-17T10:05:00Z",
+    "cpu_percent": 12.4,
+    "memory_used_bytes": 2147483648,
+    "memory_total_bytes": 8589934592,
+    "disk_free_bytes": 107374182400,
+    "disk_total_bytes": 214748364800,
+    "net_rx_bytes_per_sec": 184000,
+    "net_tx_bytes_per_sec": 96000,
+    "active_streams": 4,
+    "backlog_bytes": 52428800,
+    "load_1": 0.8
+  },
+  "history": [],
+  "streams": [],
+  "capacity": {
+    "status": "ok",
+    "bottleneck": "CPU",
+    "recommended_additional_streams": 18,
+    "confidence": "measured",
+    "active_streams": 4,
+    "resources": []
+  }
+}
+```
 
 ### Read-only public API
 
@@ -764,8 +849,11 @@ curl http://127.0.0.1:8787/control/streams/capital-fm-ke
 
 curl -X POST http://127.0.0.1:8787/control/streams/capital-fm-ke/stop
 curl -X POST http://127.0.0.1:8787/control/streams/capital-fm-ke/start
+curl -X POST 'http://127.0.0.1:8787/control/streams/capital-fm-ke/start?force=true'
 curl -X POST http://127.0.0.1:8787/control/streams/capital-fm-ke/restart
 ```
+
+Starting a stream returns `409 Conflict` with a `capacity` object when the server is at capacity and `capacity.enforce` is enabled. Add `?force=true` to override.
 
 Via the Unix socket:
 
@@ -821,7 +909,8 @@ The dashboard is embedded in the binary and served at `/`.
 Main views:
 
 - **Streams**: name, ID, type, recording state, enabled state, last activity, start/stop/restart actions, search, type/status filters, pagination.
-- **Stream details drawer**: Overview, Metadata, Logs.
+- **Stream details drawer**: Overview (including CPU, memory, output rate and chunk rate), Metadata, Logs.
+- **System**: host CPU/memory/disk/network metrics, capacity recommendation, limiting-resource bars, CPU/network/backlog sparklines, and per-stream usage.
 - **Logs**: service-wide or per-stream, with level and search filters.
 - **Uploader status strip**: pending, uploading, failed/retrying, completed, active uploads.
 
@@ -1004,6 +1093,19 @@ sudo systemctl restart streamd
 ```
 
 Stopping via systemd sends `SIGTERM`. The daemon stops recording workers, flushes final segments, closes the API, and closes the uploader database.
+
+### Capacity planning
+
+Open the **System** tab in the dashboard, or query metrics directly:
+
+```bash
+curl http://127.0.0.1:8787/control/metrics
+curl --unix-socket /run/streamd.sock http://streamd/control/metrics
+```
+
+The capacity estimate is only as accurate as the running stream mix. Audio-only streams with `copy` codecs are much cheaper than re-encoded video. Add representative streams first, let metrics collect for at least two sample intervals, then use the reported bottleneck and recommended additional stream count to grow the server.
+
+If starts are rejected while the estimate is based on assumptions, verify the collector has produced a current sample. Startup auto-starts are never blocked by capacity enforcement.
 
 ### Inspect the queue
 

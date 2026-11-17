@@ -33,6 +33,9 @@ type WorkerStatus struct {
 	Stopped      bool       `json:"stopped"`
 	Error        string     `json:"error,omitempty"`
 	LastActivity *time.Time `json:"last_activity,omitempty"`
+	LastChunkAt  *time.Time `json:"last_chunk_at,omitempty"`
+	ChunksTotal  int64      `json:"chunks_total"`
+	BytesTotal   int64      `json:"bytes_total"`
 }
 
 type Manager struct {
@@ -152,6 +155,23 @@ func (m *Manager) Statuses() map[string]WorkerStatus {
 	return out
 }
 
+func (m *Manager) ProcessSnapshot() map[string]int {
+	m.mu.Lock()
+	workers := make(map[string]*Worker, len(m.workers))
+	for id, w := range m.workers {
+		workers[id] = w
+	}
+	m.mu.Unlock()
+
+	out := make(map[string]int, len(workers))
+	for id, w := range workers {
+		if pid := w.pid(); pid > 0 {
+			out[id] = pid
+		}
+	}
+	return out
+}
+
 func (m *Manager) cleanupIncoming() {
 	root := m.app.Config().Recording.OutputDir
 	entries, err := os.ReadDir(root)
@@ -188,6 +208,9 @@ type Worker struct {
 	running      bool
 	errMsg       string
 	lastActivity time.Time
+	lastChunkAt  time.Time
+	chunksTotal  int64
+	bytesTotal   int64
 	cmd          *exec.Cmd
 }
 
@@ -207,20 +230,32 @@ func (w *Worker) setError(err error) {
 	w.mu.Unlock()
 }
 
-func (w *Worker) markActivity(t time.Time) {
+func (w *Worker) recordChunk(size int64, t time.Time) {
 	w.mu.Lock()
 	w.lastActivity = t
+	w.lastChunkAt = t
 	w.errMsg = ""
+	w.chunksTotal++
+	w.bytesTotal += size
 	w.mu.Unlock()
 }
 
 func (w *Worker) status() WorkerStatus {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	st := WorkerStatus{Running: w.running, Error: w.errMsg}
+	st := WorkerStatus{
+		Running:     w.running,
+		Error:       w.errMsg,
+		ChunksTotal: w.chunksTotal,
+		BytesTotal:  w.bytesTotal,
+	}
 	if !w.lastActivity.IsZero() {
 		t := w.lastActivity
 		st.LastActivity = &t
+	}
+	if !w.lastChunkAt.IsZero() {
+		t := w.lastChunkAt
+		st.LastChunkAt = &t
 	}
 	return st
 }
@@ -229,6 +264,15 @@ func (w *Worker) isRunning() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.running
+}
+
+func (w *Worker) pid() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.cmd != nil && w.cmd.Process != nil {
+		return w.cmd.Process.Pid
+	}
+	return 0
 }
 
 func (w *Worker) setCmd(cmd *exec.Cmd) {
@@ -571,7 +615,7 @@ func (w *Worker) handleSegmentLine(cfg Config, line string, seen map[string]bool
 			w.app.logger.Errorf(w.stream.ID, "register upload: %v", err)
 		}
 	}
-	w.markActivity(time.Now())
+	w.recordChunk(info.Size(), time.Now())
 	w.app.logger.Infof(w.stream.ID, "finalized chunk %s (%d bytes) key=%s", filepath.Base(target), info.Size(), key)
 }
 

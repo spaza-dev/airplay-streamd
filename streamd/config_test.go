@@ -185,6 +185,14 @@ func TestConfigValidation(t *testing.T) {
 			c.Storage.SecretAccessKey = "s"
 		}, "storage.endpoint"},
 		{"bad log level", func(c *Config) { c.Logging.Level = "trace" }, "not supported"},
+		{"bad metrics interval", func(c *Config) { c.Metrics.SampleIntervalSeconds = 0 }, "sample_interval_seconds"},
+		{"bad metrics history", func(c *Config) {
+			c.Metrics.SampleIntervalSeconds = 10
+			c.Metrics.HistorySeconds = 5
+		}, "history_seconds"},
+		{"bad cpu target", func(c *Config) { c.Capacity.CPUTargetPercent = 0 }, "cpu_target_percent"},
+		{"bad network target", func(c *Config) { c.Capacity.NetworkTargetPercent = 101 }, "network_target_percent"},
+		{"bad disk horizon", func(c *Config) { c.Capacity.DiskHorizonHours = 0 }, "disk_horizon_hours"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

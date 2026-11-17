@@ -49,6 +49,61 @@ export interface LogEntry {
   message: string;
 }
 
+export interface MetricPoint {
+  time: string;
+  cpu_percent: number;
+  memory_used_bytes: number;
+  memory_total_bytes: number;
+  disk_free_bytes: number;
+  disk_total_bytes: number;
+  net_rx_bytes_per_sec: number;
+  net_tx_bytes_per_sec: number;
+  active_streams: number;
+  backlog_bytes: number;
+  load_1: number;
+}
+
+export interface StreamMetrics {
+  id: string;
+  pid?: number;
+  cpu_percent: number;
+  memory_bytes: number;
+  output_bytes_per_sec: number;
+  chunks_per_minute: number;
+  last_chunk_at?: string;
+  bytes_total: number;
+  chunks_total: number;
+}
+
+export interface ResourceHeadroom {
+  name: string;
+  unit: string;
+  used: number;
+  limit: number;
+  used_percent: number;
+  additional_streams: number;
+  limiting: boolean;
+}
+
+export interface CapacityEstimate {
+  status: string;
+  bottleneck?: string;
+  recommended_additional_streams: number;
+  confidence: string;
+  active_streams: number;
+  resources: ResourceHeadroom[];
+  message?: string;
+}
+
+export interface MetricsSnapshot {
+  enabled: boolean;
+  interval_seconds: number;
+  current?: MetricPoint;
+  history: MetricPoint[];
+  streams: StreamMetrics[];
+  capacity: CapacityEstimate;
+}
+
 export interface QueueItem {
   id: number;
   stream_id: string;

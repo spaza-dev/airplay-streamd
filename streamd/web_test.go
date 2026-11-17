@@ -208,3 +208,85 @@ func TestOpenAPIDocumentAndDocs(t *testing.T) {
 		t.Fatalf("unknown API content type = %q", ct)
 	}
 }
+
+func serveRequestMethod(t *testing.T, ws *WebServer, method, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	handler, err := ws.handler()
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	req := httptest.NewRequest(method, path, nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	return rr
+}
+
+func seedMetrics(app *App) {
+	now := time.Now()
+	collector := &MetricsCollector{app: app, maxHistory: 10}
+	current := &MetricPoint{
+		Time:             now,
+		CPUPercent:       95,
+		MemoryUsedBytes:  2 * 1024 * 1024 * 1024,
+		MemoryTotalBytes: 8 * 1024 * 1024 * 1024,
+		DiskFreeBytes:    100 * 1024 * 1024 * 1024,
+		DiskTotalBytes:   200 * 1024 * 1024 * 1024,
+		NetRxBytesPerSec: 1000,
+		NetTxBytesPerSec: 1000,
+		ActiveStreams:    1,
+		BacklogBytes:     1000,
+	}
+	collector.current = current
+	collector.history = []MetricPoint{
+		{Time: now.Add(-10 * time.Second), CPUPercent: 90, BacklogBytes: 1000},
+		*current,
+	}
+	collector.streams = []StreamMetrics{
+		{ID: "one", PID: 123, CPUPercent: 20, MemoryBytes: 512 * 1024 * 1024, OutputBytesPerSec: 16000},
+	}
+	app.metrics = collector
+}
+
+func TestMetricsEndpointAndCapacityEnforcement(t *testing.T) {
+	streams := []StreamConfig{
+		{ID: "one", Name: "One", Type: "radio", URL: "https://example.com/one", Enabled: true},
+	}
+	app, ws := newWebTestApp(t, streams, "")
+	seedMetrics(app)
+
+	rr := serveRequest(t, ws, "/control/metrics", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var snapshot MetricsSnapshot
+	if err := json.Unmarshal(rr.Body.Bytes(), &snapshot); err != nil {
+		t.Fatalf("decode metrics: %v", err)
+	}
+	if !snapshot.Enabled || snapshot.Current == nil {
+		t.Fatalf("unexpected metrics snapshot: %+v", snapshot)
+	}
+	if snapshot.Capacity.Status != "at_capacity" {
+		t.Fatalf("capacity status = %q", snapshot.Capacity.Status)
+	}
+
+	blocked := serveRequestMethod(t, ws, http.MethodPost, "/control/streams/one/start")
+	if blocked.Code != http.StatusConflict {
+		t.Fatalf("blocked start status = %d body=%s", blocked.Code, blocked.Body.String())
+	}
+	var payload struct {
+		Error    string           `json:"error"`
+		Capacity CapacityEstimate `json:"capacity"`
+	}
+	if err := json.Unmarshal(blocked.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode blocked response: %v", err)
+	}
+	if payload.Error == "" || payload.Capacity.Status != "at_capacity" {
+		t.Fatalf("blocked payload = %+v", payload)
+	}
+
+	app.recorder.workers["one"] = &Worker{app: app, running: true}
+	forced := serveRequestMethod(t, ws, http.MethodPost, "/control/streams/one/start?force=true")
+	if forced.Code != http.StatusOK {
+		t.Fatalf("forced start status = %d body=%s", forced.Code, forced.Body.String())
+	}
+}

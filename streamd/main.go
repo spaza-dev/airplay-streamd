@@ -87,6 +87,8 @@ type Config struct {
 	Uploader  UploaderConfig  `yaml:"uploader" json:"uploader"`
 	Storage   StorageConfig   `yaml:"storage" json:"storage"`
 	Logging   LoggingConfig   `yaml:"logging" json:"logging"`
+	Metrics   MetricsConfig   `yaml:"metrics" json:"metrics"`
+	Capacity  CapacityConfig  `yaml:"capacity" json:"capacity"`
 	Streams   []StreamConfig  `yaml:"streams" json:"streams"`
 }
 
@@ -151,6 +153,25 @@ type LoggingConfig struct {
 	File  string `yaml:"file" json:"file"`
 }
 
+type MetricsConfig struct {
+	Enabled               bool `yaml:"enabled" json:"enabled"`
+	SampleIntervalSeconds int  `yaml:"sample_interval_seconds" json:"sample_interval_seconds"`
+	HistorySeconds        int  `yaml:"history_seconds" json:"history_seconds"`
+}
+
+type CapacityConfig struct {
+	Enforce                    bool    `yaml:"enforce" json:"enforce"`
+	CPUTargetPercent           float64 `yaml:"cpu_target_percent" json:"cpu_target_percent"`
+	MemoryTargetPercent        float64 `yaml:"memory_target_percent" json:"memory_target_percent"`
+	DiskTargetPercent          float64 `yaml:"disk_target_percent" json:"disk_target_percent"`
+	NetworkTargetPercent       float64 `yaml:"network_target_percent" json:"network_target_percent"`
+	NetworkMbps                float64 `yaml:"network_mbps" json:"network_mbps"`
+	DiskHorizonHours           float64 `yaml:"disk_horizon_hours" json:"disk_horizon_hours"`
+	MinFreeDiskGB              float64 `yaml:"min_free_disk_gb" json:"min_free_disk_gb"`
+	AssumedCPUPerStreamPercent float64 `yaml:"assumed_cpu_per_stream_percent" json:"assumed_cpu_per_stream_percent"`
+	AssumedMemoryPerStreamMB   float64 `yaml:"assumed_memory_per_stream_mb" json:"assumed_memory_per_stream_mb"`
+}
+
 type StreamConfig struct {
 	ID           string         `yaml:"id" json:"id"`
 	Name         string         `yaml:"name" json:"name"`
@@ -199,6 +220,23 @@ func defaultConfig() Config {
 		},
 		Storage: StorageConfig{Region: "auto"},
 		Logging: LoggingConfig{Level: "info", File: "/var/log/streamd/streamd.log"},
+		Metrics: MetricsConfig{
+			Enabled:               true,
+			SampleIntervalSeconds: 5,
+			HistorySeconds:        300,
+		},
+		Capacity: CapacityConfig{
+			Enforce:                    true,
+			CPUTargetPercent:           80,
+			MemoryTargetPercent:        85,
+			DiskTargetPercent:          85,
+			NetworkTargetPercent:       80,
+			NetworkMbps:                0,
+			DiskHorizonHours:           24,
+			MinFreeDiskGB:              1,
+			AssumedCPUPerStreamPercent: 1.5,
+			AssumedMemoryPerStreamMB:   64,
+		},
 	}
 }
 
@@ -294,6 +332,41 @@ func (c *Config) Validate() error {
 	case "debug", "info", "warn", "warning", "error":
 	default:
 		return fmt.Errorf("logging.level %q is not supported", c.Logging.Level)
+	}
+
+	if c.Metrics.Enabled {
+		if c.Metrics.SampleIntervalSeconds <= 0 {
+			return errors.New("metrics.sample_interval_seconds must be greater than zero")
+		}
+		if c.Metrics.HistorySeconds < c.Metrics.SampleIntervalSeconds {
+			return errors.New("metrics.history_seconds must be >= sample_interval_seconds")
+		}
+	}
+	capacity := c.Capacity
+	for name, value := range map[string]float64{
+		"capacity.cpu_target_percent":     capacity.CPUTargetPercent,
+		"capacity.memory_target_percent":  capacity.MemoryTargetPercent,
+		"capacity.disk_target_percent":    capacity.DiskTargetPercent,
+		"capacity.network_target_percent": capacity.NetworkTargetPercent,
+	} {
+		if value <= 0 || value > 100 {
+			return fmt.Errorf("%s must be greater than zero and at most 100", name)
+		}
+	}
+	if capacity.NetworkMbps < 0 {
+		return errors.New("capacity.network_mbps must not be negative")
+	}
+	if capacity.DiskHorizonHours <= 0 {
+		return errors.New("capacity.disk_horizon_hours must be greater than zero")
+	}
+	if capacity.MinFreeDiskGB < 0 {
+		return errors.New("capacity.min_free_disk_gb must not be negative")
+	}
+	if capacity.AssumedCPUPerStreamPercent < 0 {
+		return errors.New("capacity.assumed_cpu_per_stream_percent must not be negative")
+	}
+	if capacity.AssumedMemoryPerStreamMB < 0 {
+		return errors.New("capacity.assumed_memory_per_stream_mb must not be negative")
 	}
 
 	seen := map[string]bool{}
@@ -680,6 +753,7 @@ type App struct {
 
 	recorder *Manager
 	uploader *Uploader
+	metrics  *MetricsCollector
 
 	startTime time.Time
 	ctx       context.Context
@@ -762,25 +836,33 @@ func (a *App) metaCreatedAt(id string) (time.Time, error) {
 	return now, a.saveStateLocked()
 }
 
-func (a *App) AddStream(s StreamConfig) error {
+func (a *App) AddStream(s StreamConfig) ([]string, error) {
 	a.cfgMu.Lock()
 	if _, ok := a.cfg.FindBaseStream(s.ID); ok {
 		a.cfgMu.Unlock()
-		return fmt.Errorf("stream %q already exists", s.ID)
+		return nil, fmt.Errorf("stream %q already exists", s.ID)
 	}
 	tmp := *a.cfg
 	tmp.Streams = append(append([]StreamConfig{}, a.cfg.Streams...), s)
 	if err := tmp.validateStream(&tmp.Streams[len(tmp.Streams)-1]); err != nil {
 		a.cfgMu.Unlock()
-		return err
+		return nil, err
 	}
 	a.cfg.Streams = tmp.Streams
 	if err := a.saveConfigLocked(); err != nil {
 		a.cfgMu.Unlock()
-		return err
+		return nil, err
 	}
 	eff, _ := a.cfg.FindStream(s.ID)
 	a.cfgMu.Unlock()
+
+	var warnings []string
+	if a.metrics != nil {
+		warnings = a.metrics.WarningsForStream(eff)
+		for _, warning := range warnings {
+			a.logger.Warnf(s.ID, "%s", warning)
+		}
+	}
 
 	a.logger.Infof(s.ID, "stream added")
 	if a.uploader != nil {
@@ -789,7 +871,7 @@ func (a *App) AddStream(s StreamConfig) error {
 	if eff.Enabled && !a.isStopped(eff.ID) {
 		a.recorder.StartStream(eff.ID)
 	}
-	return nil
+	return warnings, nil
 }
 
 func (a *App) UpdateStream(id string, s StreamConfig) error {
@@ -862,9 +944,19 @@ func (a *App) RemoveStream(id string) error {
 	return nil
 }
 
-func (a *App) StartStream(id string) error {
-	if _, ok := a.Config().FindStream(id); !ok {
+func (a *App) StartStream(id string, force bool) error {
+	cfg := a.Config()
+	if _, ok := cfg.FindStream(id); !ok {
 		return fmt.Errorf("stream %q not found", id)
+	}
+	if status, ok := a.recorder.Status(id); ok && status.Running {
+		return nil
+	}
+	if !force && cfg.Capacity.Enforce && a.metrics != nil {
+		snapshot := a.metrics.Snapshot()
+		if snapshot.Capacity.Confidence == "measured" && snapshot.Capacity.Status == "at_capacity" {
+			return &CapacityExceededError{StreamID: id, Estimate: snapshot.Capacity}
+		}
 	}
 	if err := a.setStopped(id, false); err != nil {
 		return err
@@ -912,6 +1004,9 @@ func (a *App) publishAllMetadata() {
 func (a *App) shutdown() {
 	a.logger.Infof("", "shutting down")
 	a.recorder.StopAll()
+	if a.metrics != nil {
+		a.metrics.Stop()
+	}
 	if a.uploader != nil {
 		a.uploader.Stop()
 	}
@@ -965,7 +1060,7 @@ Usage:
   streamd stream add [id]       Add a stream (--file, or flags)
   streamd stream update <id>    Update a stream
   streamd stream remove <id>    Remove a stream
-  streamd stream start <id>     Start recording a stream
+  streamd stream start <id>     Start recording a stream (--force overrides capacity)
   streamd stream stop <id>      Stop recording a stream
   streamd stream restart <id>   Restart a stream
   streamd logs [stream]         Show service or stream logs
@@ -1012,6 +1107,9 @@ func cmdServe(args []string) error {
 			up.Start()
 		}
 	}
+
+	app.metrics = newMetricsCollector(app)
+	app.metrics.Start()
 
 	web := NewWebServer(app)
 	if err := web.Start(); err != nil {

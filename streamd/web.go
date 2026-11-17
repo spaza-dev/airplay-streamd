@@ -144,6 +144,7 @@ func (w *WebServer) handler() (http.Handler, error) {
 	mux.HandleFunc("GET /openapi.json", w.handleOpenAPI)
 	mux.HandleFunc("GET /docs", w.handleDocs)
 	mux.HandleFunc("GET /control/status", w.handleStatus)
+	mux.HandleFunc("GET /control/metrics", w.handleMetrics)
 	mux.HandleFunc("GET /control/streams", w.handleStreams)
 	mux.HandleFunc("POST /control/streams", w.handleAddStream)
 	mux.HandleFunc("GET /control/streams/{id}", w.handleStream)
@@ -266,8 +267,13 @@ func (w *WebServer) handleStatus(rw http.ResponseWriter, r *http.Request) {
 		"uptime_seconds": int(time.Since(w.app.startTime).Seconds()),
 		"streams":        len(cfg.Streams),
 		"uploader":       uploaderStatus(w.app),
+		"capacity":       w.app.metrics.Snapshot().Capacity,
 	}
 	writeJSON(rw, http.StatusOK, payload)
+}
+
+func (w *WebServer) handleMetrics(rw http.ResponseWriter, r *http.Request) {
+	writeJSON(rw, http.StatusOK, w.app.metrics.Snapshot())
 }
 
 func (w *WebServer) handleStreams(rw http.ResponseWriter, r *http.Request) {
@@ -303,11 +309,16 @@ func (w *WebServer) handleAddStream(rw http.ResponseWriter, r *http.Request) {
 		writeError(rw, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := w.app.AddStream(s); err != nil {
+	warnings, err := w.app.AddStream(s)
+	if err != nil {
 		writeError(rw, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(rw, http.StatusCreated, map[string]any{"ok": true, "id": s.ID})
+	payload := map[string]any{"ok": true, "id": s.ID}
+	if len(warnings) > 0 {
+		payload["warnings"] = warnings
+	}
+	writeJSON(rw, http.StatusCreated, payload)
 }
 
 func (w *WebServer) handleUpdateStream(rw http.ResponseWriter, r *http.Request) {
@@ -333,7 +344,17 @@ func (w *WebServer) handleRemoveStream(rw http.ResponseWriter, r *http.Request) 
 }
 
 func (w *WebServer) handleStartStream(rw http.ResponseWriter, r *http.Request) {
-	if err := w.app.StartStream(r.PathValue("id")); err != nil {
+	force := r.URL.Query().Get("force")
+	err := w.app.StartStream(r.PathValue("id"), force == "true" || force == "1")
+	if err != nil {
+		var capacityErr *CapacityExceededError
+		if errors.As(err, &capacityErr) {
+			writeJSON(rw, http.StatusConflict, map[string]any{
+				"error":    err.Error(),
+				"capacity": capacityErr.Estimate,
+			})
+			return
+		}
 		writeError(rw, http.StatusBadRequest, err.Error())
 		return
 	}
