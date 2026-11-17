@@ -57,6 +57,194 @@
           }
         }
       }
+    },
+    "/control/discovery/radio": {
+      "get": {
+        "summary": "Search Radio Browser stations",
+        "description": "Searches the configured Radio Browser endpoint. Results are cached in memory. Returns 404 when discovery is disabled and 502 for upstream errors.",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "country",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "countrycode",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "language",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "codec",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          },
+          {
+            "name": "hidebroken",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "default": "clickcount"
+            }
+          },
+          {
+            "name": "reverse",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching stations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "stations"
+                  ],
+                  "properties": {
+                    "stations": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DiscoveryStation"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Discovery disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Radio Browser request failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/control/discovery/radio/{uuid}": {
+      "get": {
+        "summary": "Get a Radio Browser station",
+        "parameters": [
+          {
+            "name": "uuid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Station",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryStation"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Station not found or discovery disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Radio Browser request failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -101,7 +289,8 @@
         ],
         "properties": {
           "id": {
-            "type": "string"
+            "type": "string",
+            "format": "uuid"
           },
           "name": {
             "type": "string"
@@ -209,6 +398,82 @@
             "type": "string"
           }
         }
+      },
+      "RadioStation": {
+        "type": "object",
+        "properties": {
+          "stationuuid": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "url_resolved": {
+            "type": "string"
+          },
+          "homepage": {
+            "type": "string"
+          },
+          "favicon": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "countrycode": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string"
+          },
+          "codec": {
+            "type": "string"
+          },
+          "bitrate": {
+            "type": "integer"
+          },
+          "hls": {
+            "type": "integer"
+          },
+          "lastcheckok": {
+            "type": "integer"
+          },
+          "votes": {
+            "type": "integer"
+          }
+        }
+      },
+      "DiscoveryStation": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RadioStation"
+          },
+          {
+            "type": "object",
+            "required": [
+              "already_added"
+            ],
+            "properties": {
+              "already_added": {
+                "type": "boolean"
+              },
+              "existing_stream_id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          }
+        ]
       }
     }
   }

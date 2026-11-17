@@ -6,7 +6,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
+
+func testID(name string) string {
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
+}
 
 func validTestConfig(t *testing.T, dir string) Config {
 	t.Helper()
@@ -21,10 +27,11 @@ func validTestConfig(t *testing.T, dir string) Config {
 	cfg.Uploader.Enabled = false
 	cfg.Uploader.QueueDB = filepath.Join(dir, "uploads.db")
 	cfg.Logging.File = ""
+	cfg.Database.Path = filepath.Join(dir, "streamd.db")
 	return cfg
 }
 
-func TestLoadConfigExpandsEnvAndMergesStream(t *testing.T) {
+func TestLoadConfigExpandsEnvAndDefaults(t *testing.T) {
 	dir := t.TempDir()
 	envName := "STREAMD_TEST_ENDPOINT_CONFIG"
 	t.Setenv(envName, "http://127.0.0.1:9000")
@@ -47,23 +54,10 @@ storage:
 logging:
   level: info
   file: ""
-streams:
-  - id: "stream_one"
-    type: "radio"
-    url: "http://example.com/live.ogg"
-    audio:
-      codec: "libopus"
-      container: "ogg"
-      bitrate: "64k"
-      sample_rate: 48000
-      channels: 1
-    video:
-      enabled: true
-      codec: "libx264"
-      container: "mp4"
-      bitrate: "1500k"
-    metadata:
-      country: "NL"
+database:
+  path: "` + filepath.Join(dir, "streams.db") + `"
+discovery:
+  enabled: false
 `
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -79,28 +73,11 @@ streams:
 	if cfg.Recording.ChunkSeconds != 2 {
 		t.Fatalf("chunk seconds = %d", cfg.Recording.ChunkSeconds)
 	}
-
-	eff, ok := cfg.FindStream("stream_one")
-	if !ok {
-		t.Fatal("stream not found")
+	if cfg.Database.Path != filepath.Join(dir, "streams.db") {
+		t.Fatalf("database path = %q", cfg.Database.Path)
 	}
-	if eff.Name != "stream_one" {
-		t.Fatalf("name default = %q", eff.Name)
-	}
-	if eff.ChunkSeconds != 2 {
-		t.Fatalf("effective chunk seconds = %d", eff.ChunkSeconds)
-	}
-	if eff.Audio.Codec != "libopus" || eff.Audio.Bitrate != "64k" || eff.Audio.Channels != 1 {
-		t.Fatalf("audio merge wrong: %+v", eff.Audio)
-	}
-	if !videoEnabled(*eff.Video) || eff.Video.Container != "mp4" || eff.Video.Codec != "libx264" {
-		t.Fatalf("video merge wrong: %+v", eff.Video)
-	}
-	if cfg.streamFormat(eff) != "mp4" {
-		t.Fatalf("stream format = %q", cfg.streamFormat(eff))
-	}
-	if eff.Metadata["country"] != "NL" {
-		t.Fatalf("metadata lost: %+v", eff.Metadata)
+	if cfg.Discovery.Enabled || cfg.Discovery.MaxResults != 100 {
+		t.Fatalf("discovery defaults = %+v", cfg.Discovery)
 	}
 }
 
@@ -149,9 +126,6 @@ func TestConfigValidation(t *testing.T) {
 	newCfg := func(t *testing.T, mutate func(*Config)) Config {
 		t.Helper()
 		cfg := validTestConfig(t, t.TempDir())
-		cfg.Streams = []StreamConfig{{
-			ID: "ok", Type: "direct", URL: "https://example.com/live.ogg", Enabled: true,
-		}}
 		if mutate != nil {
 			mutate(&cfg)
 		}
@@ -164,14 +138,11 @@ func TestConfigValidation(t *testing.T) {
 		wantSub string
 	}{
 		{"valid", nil, ""},
-		{"invalid id", func(c *Config) { c.Streams[0].ID = "-bad" }, "invalid id"},
-		{"bad type", func(c *Config) { c.Streams[0].Type = "spotify" }, "unsupported type"},
-		{"bad scheme", func(c *Config) { c.Streams[0].URL = "file:///etc/passwd" }, "scheme"},
-		{"missing url", func(c *Config) { c.Streams[0].URL = "" }, "url is required"},
-		{"negative chunk", func(c *Config) { c.Streams[0].ChunkSeconds = -1 }, "chunk_seconds"},
-		{"duplicate id", func(c *Config) {
-			c.Streams = append(c.Streams, c.Streams[0])
-		}, "duplicate stream id"},
+		{"missing database", func(c *Config) { c.Database.Path = "" }, "database.path"},
+		{"missing discovery url", func(c *Config) { c.Discovery.RadioBrowserURL = "" }, "radio_browser_url"},
+		{"bad discovery timeout", func(c *Config) { c.Discovery.TimeoutSeconds = 0 }, "timeout_seconds"},
+		{"bad discovery cache", func(c *Config) { c.Discovery.CacheSeconds = -1 }, "cache_seconds"},
+		{"bad discovery limit", func(c *Config) { c.Discovery.MaxResults = 0 }, "max_results"},
 		{"bad audio codec", func(c *Config) { c.Recording.Audio.Codec = "flac" }, "unsupported codec"},
 		{"bad bitrate", func(c *Config) { c.Recording.Audio.Bitrate = "128" }, "invalid bitrate"},
 		{"uploader needs bucket", func(c *Config) {
@@ -211,15 +182,48 @@ func TestConfigValidation(t *testing.T) {
 	}
 }
 
+func TestStreamValidation(t *testing.T) {
+	cfg := validTestConfig(t, t.TempDir())
+	valid := StreamConfig{
+		ID: testID("ok"), Name: "OK", Type: "direct", URL: "https://example.com/live.ogg",
+	}
+	if err := cfg.validateStream(&valid); err != nil {
+		t.Fatalf("valid stream rejected: %v", err)
+	}
+	if valid.ChunkSeconds != cfg.Recording.ChunkSeconds {
+		t.Fatalf("chunk seconds = %d", valid.ChunkSeconds)
+	}
+	cases := []struct {
+		name    string
+		mutate  func(*StreamConfig)
+		wantSub string
+	}{
+		{"invalid id", func(s *StreamConfig) { s.ID = "not-a-uuid" }, "invalid id"},
+		{"bad type", func(s *StreamConfig) { s.Type = "spotify" }, "unsupported type"},
+		{"bad scheme", func(s *StreamConfig) { s.URL = "file:///etc/passwd" }, "scheme"},
+		{"missing url", func(s *StreamConfig) { s.URL = "" }, "url is required"},
+		{"negative chunk", func(s *StreamConfig) { s.ChunkSeconds = -1 }, "chunk_seconds"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			stream := valid
+			tt.mutate(&stream)
+			err := cfg.validateStream(&stream)
+			if err == nil || !strings.Contains(err.Error(), tt.wantSub) {
+				t.Fatalf("error = %v, want substring %q", err, tt.wantSub)
+			}
+		})
+	}
+}
+
 func TestFFmpegArgs(t *testing.T) {
 	dir := t.TempDir()
 	cfg := validTestConfig(t, dir)
-	cfg.Streams = []StreamConfig{{
-		ID: "tv1", Type: "hls", URL: "https://example.com/live.m3u8",
+	eff := cfg.effectiveStream(StreamConfig{
+		ID: testID("tv1"), Name: "TV 1", Type: "hls", URL: "https://example.com/live.m3u8",
 		Enabled: true, ChunkSeconds: 5,
 		Video: &VideoConfig{Enabled: boolPtr(true), Codec: "libx264", Bitrate: "2500k", Container: "mp4"},
-	}}
-	eff := cfg.effectiveStream(cfg.Streams[0])
+	})
 	w := &Worker{app: &App{cfg: &cfg}, stream: eff}
 
 	args := w.ffmpegArgs(cfg, "https://example.com/live.m3u8", "/tmp/in/%Y%m%d%H%M%S.mp4")
@@ -276,57 +280,5 @@ func TestRetryAt(t *testing.T) {
 	}
 	if _, retry = u.retryAt(3); retry {
 		t.Fatal("max attempts should stop retries")
-	}
-}
-
-func TestSaveConfigRedactsCredentials(t *testing.T) {
-	dir := t.TempDir()
-	cfg := validTestConfig(t, dir)
-	cfg.Storage = StorageConfig{
-		Endpoint: "https://example.r2.cloudflarestorage.com", Region: "auto",
-		Bucket: "bucket", AccessKeyID: "super-secret-key", SecretAccessKey: "super-secret-value",
-	}
-	cfg.Server.AdminToken = "super-secret-token"
-	cfg.Streams = []StreamConfig{{ID: "one", Type: "direct", URL: "https://example.com/a.ogg"}}
-	cfgPath := filepath.Join(dir, "config.yaml")
-	logger, err := NewLogger("error", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	state := &RuntimeState{Stopped: map[string]bool{}, MetaCreatedAt: map[string]string{}}
-	app := newApp(cfgPath, "", &cfg, logger, state, filepath.Join(dir, "runtime.json"))
-	app.cfgMu.Lock()
-	err = app.saveConfigLocked()
-	app.cfgMu.Unlock()
-	if err != nil {
-		t.Fatalf("saveConfigLocked: %v", err)
-	}
-	data, err := os.ReadFile(cfgPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(data)
-	if strings.Contains(text, "super-secret") {
-		t.Fatalf("credentials persisted to config:\n%s", text)
-	}
-	if !strings.Contains(text, "${S3_ACCESS_KEY_ID}") || !strings.Contains(text, "${S3_SECRET_ACCESS_KEY}") {
-		t.Fatalf("credential placeholders missing:\n%s", text)
-	}
-	if !strings.Contains(text, "${STREAMD_ADMIN_TOKEN}") {
-		t.Fatalf("admin token placeholder missing:\n%s", text)
-	}
-
-	t.Setenv("S3_ACCESS_KEY_ID", "super-secret-key")
-	t.Setenv("S3_SECRET_ACCESS_KEY", "super-secret-value")
-	t.Setenv("STREAMD_ADMIN_TOKEN", "super-secret-token")
-	loaded, err := loadConfig(cfgPath, filepath.Join(dir, "missing.env"))
-	if err != nil {
-		t.Fatalf("reload saved config: %v", err)
-	}
-	if loaded.Storage.AccessKeyID != "super-secret-key" || loaded.Storage.SecretAccessKey != "super-secret-value" {
-		t.Fatalf("credentials not restored from env: %+v", loaded.Storage)
-	}
-	if loaded.Server.AdminToken != "super-secret-token" {
-		t.Fatalf("admin token not restored from env: %q", loaded.Server.AdminToken)
 	}
 }

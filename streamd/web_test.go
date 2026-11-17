@@ -2,12 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func newWebTestApp(t *testing.T, streams []StreamConfig, token string) (*App, *WebServer) {
@@ -15,7 +18,6 @@ func newWebTestApp(t *testing.T, streams []StreamConfig, token string) (*App, *W
 	dir := t.TempDir()
 	cfg := validTestConfig(t, dir)
 	cfg.Server.AdminToken = token
-	cfg.Streams = streams
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("validate config: %v", err)
 	}
@@ -24,10 +26,29 @@ func newWebTestApp(t *testing.T, streams []StreamConfig, token string) (*App, *W
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := &RuntimeState{Stopped: map[string]bool{}, MetaCreatedAt: map[string]string{}}
+	state := &RuntimeState{Stopped: map[string]bool{}}
+	store, err := OpenStreamStore(cfg.Database.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	app := newApp(filepath.Join(dir, "config.yaml"), "", &cfg, logger, state, filepath.Join(dir, "runtime.json"))
+	app.streams = store
+	for i := range streams {
+		if _, err := uuid.Parse(streams[i].ID); err != nil {
+			streams[i].ID = testID(streams[i].ID)
+		}
+		if streams[i].Source == "" {
+			streams[i].Source = "custom"
+		}
+		if err := store.Create(t.Context(), streams[i]); err != nil {
+			t.Fatalf("seed stream: %v", err)
+		}
+	}
 	app.recorder = NewManager(app)
-	t.Cleanup(func() { _ = logger.Close() })
+	t.Cleanup(func() {
+		_ = store.Close()
+		_ = logger.Close()
+	})
 	return app, NewWebServer(app)
 }
 
@@ -64,9 +85,9 @@ func TestPublicStreamsListsOnlyEnabledWithOverview(t *testing.T) {
 	app, ws := newWebTestApp(t, streams, "")
 
 	activity := time.Date(2026, 11, 16, 10, 5, 0, 0, time.UTC)
-	app.recorder.workers["enabled-a"] = &Worker{app: app, running: true, lastActivity: activity}
-	app.recorder.workers["error-c"] = &Worker{app: app, running: true, errMsg: "source unavailable"}
-	app.state.Stopped["stopped-d"] = true
+	app.recorder.workers[testID("enabled-a")] = &Worker{app: app, running: true, lastActivity: activity}
+	app.recorder.workers[testID("error-c")] = &Worker{app: app, running: true, errMsg: "source unavailable"}
+	app.state.Stopped[testID("stopped-d")] = true
 
 	rr := serveRequest(t, ws, "/api/streams", nil)
 	if rr.Code != http.StatusOK {
@@ -87,7 +108,7 @@ func TestPublicStreamsListsOnlyEnabledWithOverview(t *testing.T) {
 	for _, stream := range response.Streams {
 		ids = append(ids, stream.ID)
 	}
-	if got, want := strings.Join(ids, ","), "enabled-a,error-c,idle-e,stopped-d"; got != want {
+	if got, want := strings.Join(ids, ","), testID("enabled-a")+","+testID("error-c")+","+testID("idle-e")+","+testID("stopped-d"); got != want {
 		t.Fatalf("ids = %s, want %s", got, want)
 	}
 
@@ -95,7 +116,7 @@ func TestPublicStreamsListsOnlyEnabledWithOverview(t *testing.T) {
 	for _, stream := range response.Streams {
 		byID[stream.ID] = stream
 	}
-	a := byID["enabled-a"]
+	a := byID[testID("enabled-a")]
 	if a.Status != "running" || a.Type != "radio" || a.URL != "https://example.com/a" || !a.Enabled {
 		t.Fatalf("unexpected enabled stream: %+v", a)
 	}
@@ -108,16 +129,16 @@ func TestPublicStreamsListsOnlyEnabledWithOverview(t *testing.T) {
 	if a.Video == nil || videoEnabled(*a.Video) {
 		t.Fatalf("video default not merged: %+v", a.Video)
 	}
-	if byID["error-c"].Status != "error" || byID["error-c"].Error != "source unavailable" {
-		t.Fatalf("error stream = %+v", byID["error-c"])
+	if byID[testID("error-c")].Status != "error" || byID[testID("error-c")].Error != "source unavailable" {
+		t.Fatalf("error stream = %+v", byID[testID("error-c")])
 	}
-	if byID["stopped-d"].Status != "stopped" {
-		t.Fatalf("stopped stream = %+v", byID["stopped-d"])
+	if byID[testID("stopped-d")].Status != "stopped" {
+		t.Fatalf("stopped stream = %+v", byID[testID("stopped-d")])
 	}
-	if byID["idle-e"].Status != "idle" {
-		t.Fatalf("idle stream = %+v", byID["idle-e"])
+	if byID[testID("idle-e")].Status != "idle" {
+		t.Fatalf("idle stream = %+v", byID[testID("idle-e")])
 	}
-	if _, ok := byID["disabled-b"]; ok {
+	if _, ok := byID[testID("disabled-b")]; ok {
 		t.Fatal("disabled stream was returned")
 	}
 
@@ -139,7 +160,7 @@ func TestPublicStreamsListsOnlyEnabledWithOverview(t *testing.T) {
 
 func TestPublicStreamsAuthentication(t *testing.T) {
 	streams := []StreamConfig{
-		{ID: "one", Type: "radio", URL: "https://example.com/one", Enabled: true},
+		{ID: testID("one"), Type: "radio", URL: "https://example.com/one", Enabled: true},
 	}
 
 	_, openWS := newWebTestApp(t, streams, "")
@@ -242,14 +263,14 @@ func seedMetrics(app *App) {
 		*current,
 	}
 	collector.streams = []StreamMetrics{
-		{ID: "one", PID: 123, CPUPercent: 20, MemoryBytes: 512 * 1024 * 1024, OutputBytesPerSec: 16000},
+		{ID: testID("one"), PID: 123, CPUPercent: 20, MemoryBytes: 512 * 1024 * 1024, OutputBytesPerSec: 16000},
 	}
 	app.metrics = collector
 }
 
 func TestMetricsEndpointAndCapacityEnforcement(t *testing.T) {
 	streams := []StreamConfig{
-		{ID: "one", Name: "One", Type: "radio", URL: "https://example.com/one", Enabled: true},
+		{ID: testID("one"), Name: "One", Type: "radio", URL: "https://example.com/one", Enabled: true},
 	}
 	app, ws := newWebTestApp(t, streams, "")
 	seedMetrics(app)
@@ -269,7 +290,7 @@ func TestMetricsEndpointAndCapacityEnforcement(t *testing.T) {
 		t.Fatalf("capacity status = %q", snapshot.Capacity.Status)
 	}
 
-	blocked := serveRequestMethod(t, ws, http.MethodPost, "/control/streams/one/start")
+	blocked := serveRequestMethod(t, ws, http.MethodPost, "/control/streams/"+testID("one")+"/start")
 	if blocked.Code != http.StatusConflict {
 		t.Fatalf("blocked start status = %d body=%s", blocked.Code, blocked.Body.String())
 	}
@@ -284,9 +305,129 @@ func TestMetricsEndpointAndCapacityEnforcement(t *testing.T) {
 		t.Fatalf("blocked payload = %+v", payload)
 	}
 
-	app.recorder.workers["one"] = &Worker{app: app, running: true}
-	forced := serveRequestMethod(t, ws, http.MethodPost, "/control/streams/one/start?force=true")
+	app.recorder.workers[testID("one")] = &Worker{app: app, running: true}
+	forced := serveRequestMethod(t, ws, http.MethodPost, "/control/streams/"+testID("one")+"/start?force=true")
 	if forced.Code != http.StatusOK {
 		t.Fatalf("forced start status = %d body=%s", forced.Code, forced.Body.String())
+	}
+}
+
+func TestDiscoveryEndpoints(t *testing.T) {
+	addedID := uuid.NewString()
+	var upstreamPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		writeJSON(rw, http.StatusOK, []RadioStation{{
+			StationUUID: addedID,
+			Name:        "Capital FM",
+			URL:         "https://example.com/capital",
+			Country:     "Kenya",
+			Codec:       "MP3",
+			Bitrate:     128,
+			LastCheckOK: flexInt(1),
+		}})
+	}))
+	defer upstream.Close()
+
+	app, ws := newWebTestApp(t, []StreamConfig{{
+		ID: addedID, Source: "radio-browser", Name: "Capital FM", Type: "radio",
+		URL: "https://example.com/capital", Enabled: true,
+		Radio: &RadioStation{StationUUID: addedID, Name: "Capital FM", URL: "https://example.com/capital"},
+	}}, "")
+	app.discovery = NewRadioBrowserClient(DiscoveryConfig{
+		RadioBrowserURL: upstream.URL,
+		TimeoutSeconds:  5,
+		CacheSeconds:    0,
+		MaxResults:      10,
+	})
+
+	rr := serveRequest(t, ws, "/control/discovery/radio?name=Capital&limit=5", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("search status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var response struct {
+		Stations []DiscoveryStation `json:"stations"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Stations) != 1 || !response.Stations[0].AlreadyAdded ||
+		response.Stations[0].ExistingStreamID != addedID {
+		t.Fatalf("stations = %+v", response.Stations)
+	}
+	if upstreamPath != "/json/stations/search" {
+		t.Fatalf("upstream path = %q", upstreamPath)
+	}
+
+	rr = serveRequest(t, ws, "/control/discovery/radio/"+addedID, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("by uuid status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	var station DiscoveryStation
+	if err := json.Unmarshal(rr.Body.Bytes(), &station); err != nil {
+		t.Fatal(err)
+	}
+	if station.StationUUID != addedID || !station.AlreadyAdded {
+		t.Fatalf("station = %+v", station)
+	}
+	if upstreamPath != "/json/stations/byuuid/"+addedID {
+		t.Fatalf("upstream path = %q", upstreamPath)
+	}
+}
+
+func TestDiscoveryDisabled(t *testing.T) {
+	_, ws := newWebTestApp(t, nil, "")
+	rr := serveRequest(t, ws, "/control/discovery/radio?name=x", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAddStreamAssignsUUIDs(t *testing.T) {
+	app, _ := newWebTestApp(t, nil, "")
+
+	custom, _, err := app.AddStream(StreamConfig{
+		ID: "client-supplied", Name: "Custom", Type: "direct",
+		URL: "https://example.com/custom.ogg",
+	})
+	if err != nil {
+		t.Fatalf("add custom: %v", err)
+	}
+	if custom.ID == "client-supplied" {
+		t.Fatal("client-supplied id was accepted")
+	}
+	if _, err := uuid.Parse(custom.ID); err != nil {
+		t.Fatalf("generated id = %q: %v", custom.ID, err)
+	}
+	if custom.Source != "custom" {
+		t.Fatalf("source = %q", custom.Source)
+	}
+
+	stationUUID := uuid.NewString()
+	radio, _, err := app.AddStream(StreamConfig{
+		Radio: &RadioStation{
+			StationUUID: stationUUID,
+			Name:        "Capital FM",
+			URL:         "https://example.com/capital",
+			Country:     "Kenya",
+			CountryCode: "KE",
+			Codec:       "MP3",
+			Bitrate:     128,
+			LastCheckOK: flexInt(1),
+		},
+	})
+	if err != nil {
+		t.Fatalf("add radio: %v", err)
+	}
+	if radio.ID != stationUUID || radio.Source != "radio-browser" {
+		t.Fatalf("radio stream = %+v", radio)
+	}
+	if radio.Metadata["source"] != "radio-browser" || radio.Metadata["country"] != "Kenya" {
+		t.Fatalf("radio metadata = %+v", radio.Metadata)
+	}
+	if _, _, err := app.AddStream(StreamConfig{
+		Radio: &RadioStation{StationUUID: stationUUID, Name: "Capital FM", URL: "https://example.com/capital"},
+	}); !errors.Is(err, ErrStreamConflict) {
+		t.Fatalf("duplicate station error = %v", err)
 	}
 }

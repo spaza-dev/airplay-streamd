@@ -38,7 +38,7 @@ type Store struct {
 	writeMu sync.Mutex
 }
 
-func OpenStore(path string) (*Store, error) {
+func openSQLiteDB(path string) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, err
 	}
@@ -50,6 +50,14 @@ func OpenStore(path string) (*Store, error) {
 	db.SetMaxOpenConns(4)
 	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
 		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func OpenStore(path string) (*Store, error) {
+	db, err := openSQLiteDB(path)
+	if err != nil {
 		return nil, err
 	}
 	schema := `
@@ -549,9 +557,8 @@ func (u *Uploader) PublishMeta(stream StreamConfig) {
 		return
 	}
 	go func() {
-		created, err := u.app.metaCreatedAt(stream.ID)
-		if err != nil {
-			u.app.logger.Warnf(stream.ID, "persist metadata timestamp: %v", err)
+		created := stream.CreatedAt
+		if created.IsZero() {
 			created = time.Now().UTC()
 		}
 		cfg := u.app.Config()

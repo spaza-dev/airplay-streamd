@@ -12,11 +12,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 type APIClient struct {
@@ -183,6 +182,8 @@ func cmdStream(args []string) error {
 		return cmdStreamShow(args[1:])
 	case "add":
 		return cmdStreamAdd(args[1:])
+	case "search":
+		return cmdStreamSearch(args[1:])
 	case "update":
 		return cmdStreamUpdate(args[1:])
 	case "remove":
@@ -279,39 +280,42 @@ func cmdStreamAdd(args []string) error {
 	fs := newFlagSet("stream add")
 	var g globalFlags
 	addGlobalFlags(fs, &g)
-	id := fs.String("id", "", "stream id")
 	name := fs.String("name", "", "display name")
-	typ := fs.String("type", "", "source type")
+	typ := fs.String("type", "", "source type (radio, hls, tv, direct, ...)")
 	sourceURL := fs.String("url", "", "source url")
 	enabled := fs.Bool("enabled", false, "start automatically")
 	chunk := fs.Int("chunk-seconds", 0, "chunk duration override")
-	file := fs.String("file", "", "stream YAML file ('-' for stdin)")
+	radioUUID := fs.String("radio-uuid", "", "Radio Browser station UUID")
 	var metadata stringListFlag
 	fs.Var(&metadata, "metadata", "metadata key=value (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *id == "" {
-		*id = firstArg(fs, "")
+
+	cfg, err := loadCLIConfig(&g)
+	if err != nil {
+		return err
 	}
-	if *id == "" {
-		return errors.New("stream id is required (positional or --id)")
-	}
+	client := clientForConfig(cfg)
 
 	var stream StreamConfig
-	if *file != "" {
-		data, err := readInput(*file)
-		if err != nil {
+	if *radioUUID != "" {
+		var station DiscoveryStation
+		if err := client.do("GET", "/control/discovery/radio/"+url.PathEscape(*radioUUID), nil, &station); err != nil {
 			return err
 		}
-		if err := yaml.Unmarshal(data, &stream); err != nil {
-			return err
+		if station.AlreadyAdded {
+			return fmt.Errorf("station already added as %s", station.ExistingStreamID)
 		}
+		radio := station.RadioStation
+		stream = StreamConfig{Radio: &radio}
 	} else {
-		stream = StreamConfig{ID: *id, Name: *name, Type: *typ, URL: *sourceURL, Enabled: *enabled, ChunkSeconds: *chunk}
+		if *name == "" || *sourceURL == "" || *typ == "" {
+			return errors.New("--name, --url and --type are required unless --radio-uuid is used")
+		}
+		stream = StreamConfig{Name: *name, Type: *typ, URL: *sourceURL}
 	}
-	stream.ID = *id
-	if stream.Name == "" {
+	if *name != "" {
 		stream.Name = *name
 	}
 	if *typ != "" {
@@ -320,19 +324,10 @@ func cmdStreamAdd(args []string) error {
 	if *sourceURL != "" {
 		stream.URL = *sourceURL
 	}
-	if *enabled {
-		stream.Enabled = true
-	}
-	if *chunk != 0 {
-		stream.ChunkSeconds = *chunk
-	}
+	stream.Enabled = *enabled
+	stream.ChunkSeconds = *chunk
 	applyMetadataFlags(&stream, metadata)
 
-	cfg, err := loadCLIConfig(&g)
-	if err != nil {
-		return err
-	}
-	client := clientForConfig(cfg)
 	var out map[string]any
 	if err := client.do("POST", "/control/streams", stream, &out); err != nil {
 		return err
@@ -340,13 +335,73 @@ func cmdStreamAdd(args []string) error {
 	if g.json {
 		return printJSON(out)
 	}
-	fmt.Printf("stream %s added\n", stream.ID)
+	id, _ := out["id"].(string)
+	fmt.Printf("stream %s added\n", id)
 	if warnings, ok := out["warnings"].([]any); ok {
 		for _, warning := range warnings {
 			fmt.Printf("warning: %v\n", warning)
 		}
 	}
 	return nil
+}
+
+func cmdStreamSearch(args []string) error {
+	fs := newFlagSet("stream search")
+	var g globalFlags
+	addGlobalFlags(fs, &g)
+	name := fs.String("name", "", "station name")
+	country := fs.String("country", "", "country")
+	countryCode := fs.String("countrycode", "", "country code")
+	state := fs.String("state", "", "state")
+	language := fs.String("language", "", "language")
+	tag := fs.String("tag", "", "tag")
+	codec := fs.String("codec", "", "codec")
+	limit := fs.Int("limit", 20, "maximum results")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := loadCLIConfig(&g)
+	if err != nil {
+		return err
+	}
+	client := clientForConfig(cfg)
+	query := url.Values{}
+	set := func(key, value string) {
+		if strings.TrimSpace(value) != "" {
+			query.Set(key, value)
+		}
+	}
+	set("name", *name)
+	set("country", *country)
+	set("countrycode", *countryCode)
+	set("state", *state)
+	set("language", *language)
+	set("tag", *tag)
+	set("codec", *codec)
+	query.Set("limit", strconv.Itoa(*limit))
+	query.Set("hidebroken", "true")
+	query.Set("reverse", "true")
+	var out struct {
+		Stations []DiscoveryStation `json:"stations"`
+	}
+	if err := client.do("GET", "/control/discovery/radio?"+query.Encode(), nil, &out); err != nil {
+		return err
+	}
+	if g.json {
+		return printJSON(out.Stations)
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
+	fmt.Fprintln(tw, "UUID\tNAME\tCOUNTRY\tCODEC\tBITRATE\tHLS\tOK\tADDED")
+	for _, station := range out.Stations {
+		added := "-"
+		if station.AlreadyAdded {
+			added = station.ExistingStreamID
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+			station.StationUUID, station.Name, station.Country, station.Codec,
+			station.Bitrate, httpBool(station.IsHLS()), httpBool(station.IsHealthy()), added)
+	}
+	return tw.Flush()
 }
 
 func cmdStreamUpdate(args []string) error {
@@ -358,7 +413,6 @@ func cmdStreamUpdate(args []string) error {
 	sourceURL := fs.String("url", "", "source url")
 	enabled := fs.String("enabled", "", "true or false")
 	chunk := fs.Int("chunk-seconds", 0, "chunk duration override")
-	file := fs.String("file", "", "stream YAML file ('-' for stdin)")
 	var metadata stringListFlag
 	fs.Var(&metadata, "metadata", "metadata key=value (repeatable)")
 	if err := fs.Parse(args); err != nil {
@@ -375,22 +429,11 @@ func cmdStreamUpdate(args []string) error {
 	}
 	client := clientForConfig(cfg)
 
-	var stream StreamConfig
-	if *file != "" {
-		data, err := readInput(*file)
-		if err != nil {
-			return err
-		}
-		if err := yaml.Unmarshal(data, &stream); err != nil {
-			return err
-		}
-	} else {
-		var view StreamView
-		if err := client.do("GET", "/control/streams/"+url.PathEscape(id), nil, &view); err != nil {
-			return err
-		}
-		stream = streamViewToConfig(view)
+	var view StreamView
+	if err := client.do("GET", "/control/streams/"+url.PathEscape(id), nil, &view); err != nil {
+		return err
 	}
+	stream := streamViewToConfig(view)
 	stream.ID = id
 	if *name != "" {
 		stream.Name = *name
@@ -514,12 +557,7 @@ func cmdConfig(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("configuration OK: %d streams\n", len(cfg.Streams))
-	for _, id := range sortedIDs(cfg) {
-		eff, _ := cfg.FindStream(id)
-		fmt.Printf("  %-24s type=%-8s enabled=%-5s chunk=%ds format=%s\n",
-			id, eff.Type, httpBool(eff.Enabled), eff.ChunkSeconds, cfg.streamFormat(eff))
-	}
+	fmt.Printf("configuration OK: database=%s discovery=%s\n", cfg.Database.Path, httpBool(cfg.Discovery.Enabled))
 	return nil
 }
 
@@ -542,13 +580,6 @@ func firstArg(fs *flag.FlagSet, def string) string {
 	return def
 }
 
-func readInput(path string) ([]byte, error) {
-	if path == "-" {
-		return io.ReadAll(os.Stdin)
-	}
-	return os.ReadFile(path)
-}
-
 func applyMetadataFlags(stream *StreamConfig, values []string) {
 	if len(values) == 0 {
 		return
@@ -567,9 +598,10 @@ func applyMetadataFlags(stream *StreamConfig, values []string) {
 
 func streamViewToConfig(v StreamView) StreamConfig {
 	stream := StreamConfig{
-		ID: v.ID, Name: v.Name, Type: v.Type, URL: v.URL,
+		ID: v.ID, Source: v.Source, Name: v.Name, Type: v.Type, URL: v.URL,
 		Enabled: v.Enabled, ChunkSeconds: v.ChunkSeconds,
-		Audio: v.Audio, Video: v.Video, Metadata: v.Metadata,
+		Audio: v.Audio, Video: v.Video, Metadata: v.Metadata, Radio: v.Radio,
+		CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt,
 	}
 	return stream
 }

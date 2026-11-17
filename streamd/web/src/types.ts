@@ -14,8 +14,33 @@ export interface VideoConfig {
   container?: string;
 }
 
+export interface RadioStation {
+  stationuuid: string;
+  name: string;
+  url: string;
+  url_resolved: string;
+  homepage: string;
+  favicon: string;
+  tags: string;
+  country: string;
+  countrycode: string;
+  state: string;
+  language: string;
+  codec: string;
+  bitrate: number;
+  hls: number;
+  lastcheckok: number;
+  votes: number;
+}
+
+export interface DiscoveryStation extends RadioStation {
+  already_added: boolean;
+  existing_stream_id?: string;
+}
+
 export interface StreamView {
   id: string;
+  source: string;
   name: string;
   type: string;
   url: string;
@@ -24,6 +49,9 @@ export interface StreamView {
   audio?: AudioConfig;
   video?: VideoConfig;
   metadata?: Record<string, unknown>;
+  radio?: RadioStation;
+  created_at: string;
+  updated_at: string;
   running: boolean;
   stopped: boolean;
   error?: string;

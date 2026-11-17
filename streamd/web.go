@@ -19,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 //go:embed all:web/dist
@@ -29,6 +31,7 @@ var openAPIDoc []byte
 
 type StreamView struct {
 	ID           string         `json:"id"`
+	Source       string         `json:"source"`
 	Name         string         `json:"name"`
 	Type         string         `json:"type"`
 	URL          string         `json:"url"`
@@ -37,6 +40,9 @@ type StreamView struct {
 	Audio        *AudioConfig   `json:"audio"`
 	Video        *VideoConfig   `json:"video"`
 	Metadata     map[string]any `json:"metadata,omitempty"`
+	Radio        *RadioStation  `json:"radio,omitempty"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
 	Running      bool           `json:"running"`
 	Stopped      bool           `json:"stopped"`
 	Error        string         `json:"error,omitempty"`
@@ -157,6 +163,8 @@ func (w *WebServer) handler() (http.Handler, error) {
 	mux.HandleFunc("GET /control/logs/stream/{id}", w.handleStreamLogs)
 	mux.HandleFunc("GET /control/uploader/status", w.handleUploaderStatus)
 	mux.HandleFunc("GET /control/uploader/queue", w.handleUploaderQueue)
+	mux.HandleFunc("GET /control/discovery/radio", w.handleDiscoveryRadio)
+	mux.HandleFunc("GET /control/discovery/radio/{uuid}", w.handleDiscoveryRadioStation)
 	for _, method := range []string{"GET", "POST", "PUT", "DELETE", "PATCH"} {
 		mux.HandleFunc(method+" /control/", func(rw http.ResponseWriter, r *http.Request) {
 			writeError(rw, http.StatusNotFound, "not found")
@@ -219,20 +227,26 @@ func (w *WebServer) authMiddleware(next http.Handler) http.Handler {
 }
 
 func (w *WebServer) handlePublicStreams(rw http.ResponseWriter, r *http.Request) {
-	cfg := w.app.Config()
+	streams, err := w.app.ListStreams(r.Context())
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
 	statuses := w.app.recorder.Statuses()
-	views := make([]PublicStreamView, 0, len(cfg.Streams))
-	for _, base := range cfg.Streams {
+	cfg := w.app.Config()
+	views := make([]PublicStreamView, 0, len(streams))
+	for _, base := range streams {
 		if !base.Enabled {
 			continue
 		}
-		eff, ok := cfg.FindStream(base.ID)
-		if !ok {
-			continue
-		}
-		views = append(views, makePublicStreamView(w.app, eff, statuses[base.ID]))
+		views = append(views, makePublicStreamView(w.app, cfg.effectiveStream(base), statuses[base.ID]))
 	}
-	sort.Slice(views, func(i, j int) bool { return views[i].ID < views[j].ID })
+	sort.Slice(views, func(i, j int) bool {
+		if views[i].Name != views[j].Name {
+			return views[i].Name < views[j].Name
+		}
+		return views[i].ID < views[j].ID
+	})
 	writeJSON(rw, http.StatusOK, PublicStreamsResponse{Streams: views})
 }
 
@@ -261,11 +275,15 @@ func (w *WebServer) handleHealth(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *WebServer) handleStatus(rw http.ResponseWriter, r *http.Request) {
-	cfg := w.app.Config()
+	streams, err := w.app.ListStreams(r.Context())
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
 	payload := map[string]any{
 		"version":        version,
 		"uptime_seconds": int(time.Since(w.app.startTime).Seconds()),
-		"streams":        len(cfg.Streams),
+		"streams":        len(streams),
 		"uploader":       uploaderStatus(w.app),
 		"capacity":       w.app.metrics.Snapshot().Capacity,
 	}
@@ -277,24 +295,33 @@ func (w *WebServer) handleMetrics(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *WebServer) handleStreams(rw http.ResponseWriter, r *http.Request) {
-	cfg := w.app.Config()
-	statuses := w.app.recorder.Statuses()
-	views := make([]StreamView, 0, len(cfg.Streams))
-	for _, base := range cfg.Streams {
-		eff, ok := cfg.FindStream(base.ID)
-		if !ok {
-			continue
-		}
-		views = append(views, makeStreamView(w.app, eff, statuses[base.ID]))
+	streams, err := w.app.ListStreams(r.Context())
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
 	}
-	sort.Slice(views, func(i, j int) bool { return views[i].ID < views[j].ID })
+	statuses := w.app.recorder.Statuses()
+	cfg := w.app.Config()
+	views := make([]StreamView, 0, len(streams))
+	for _, base := range streams {
+		views = append(views, makeStreamView(w.app, cfg.effectiveStream(base), statuses[base.ID]))
+	}
+	sort.Slice(views, func(i, j int) bool {
+		if views[i].Name != views[j].Name {
+			return views[i].Name < views[j].Name
+		}
+		return views[i].ID < views[j].ID
+	})
 	writeJSON(rw, http.StatusOK, map[string]any{"streams": views, "uploader": uploaderStatus(w.app)})
 }
 
 func (w *WebServer) handleStream(rw http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	cfg := w.app.Config()
-	eff, ok := cfg.FindStream(id)
+	eff, ok, err := w.app.FindStream(r.Context(), id)
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if !ok {
 		writeError(rw, http.StatusNotFound, "stream not found")
 		return
@@ -309,12 +336,12 @@ func (w *WebServer) handleAddStream(rw http.ResponseWriter, r *http.Request) {
 		writeError(rw, http.StatusBadRequest, err.Error())
 		return
 	}
-	warnings, err := w.app.AddStream(s)
+	created, warnings, err := w.app.AddStream(s)
 	if err != nil {
-		writeError(rw, http.StatusBadRequest, err.Error())
+		writeStreamError(rw, err)
 		return
 	}
-	payload := map[string]any{"ok": true, "id": s.ID}
+	payload := map[string]any{"ok": true, "id": created.ID}
 	if len(warnings) > 0 {
 		payload["warnings"] = warnings
 	}
@@ -329,7 +356,7 @@ func (w *WebServer) handleUpdateStream(rw http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err := w.app.UpdateStream(id, s); err != nil {
-		writeError(rw, http.StatusBadRequest, err.Error())
+		writeStreamError(rw, err)
 		return
 	}
 	writeJSON(rw, http.StatusOK, map[string]any{"ok": true, "id": id})
@@ -337,7 +364,7 @@ func (w *WebServer) handleUpdateStream(rw http.ResponseWriter, r *http.Request) 
 
 func (w *WebServer) handleRemoveStream(rw http.ResponseWriter, r *http.Request) {
 	if err := w.app.RemoveStream(r.PathValue("id")); err != nil {
-		writeError(rw, http.StatusNotFound, err.Error())
+		writeStreamError(rw, err)
 		return
 	}
 	writeJSON(rw, http.StatusOK, map[string]any{"ok": true})
@@ -375,6 +402,99 @@ func (w *WebServer) handleRestartStream(rw http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(rw, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (w *WebServer) handleDiscoveryRadio(rw http.ResponseWriter, r *http.Request) {
+	if w.app.discovery == nil {
+		writeError(rw, http.StatusNotFound, "radio discovery is disabled")
+		return
+	}
+	query := r.URL.Query()
+	reverse := true
+	if raw := strings.TrimSpace(query.Get("reverse")); raw != "" {
+		reverse, _ = strconv.ParseBool(raw)
+	}
+	hideBroken := true
+	if raw := strings.TrimSpace(query.Get("hidebroken")); raw != "" {
+		hideBroken, _ = strconv.ParseBool(raw)
+	}
+	q := RadioQuery{
+		Name:        query.Get("name"),
+		Country:     query.Get("country"),
+		CountryCode: query.Get("countrycode"),
+		State:       query.Get("state"),
+		Language:    query.Get("language"),
+		Tag:         query.Get("tag"),
+		Codec:       query.Get("codec"),
+		Limit:       atoiOr(query.Get("limit"), 20),
+		Offset:      atoiOr(query.Get("offset"), 0),
+		HideBroken:  hideBroken,
+		Order:       query.Get("order"),
+		Reverse:     reverse,
+	}
+	stations, err := w.app.discovery.Search(r.Context(), q)
+	if err != nil {
+		writeError(rw, http.StatusBadGateway, err.Error())
+		return
+	}
+	added, err := w.app.streams.StationUUIDs(r.Context())
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
+	views := make([]DiscoveryStation, 0, len(stations))
+	for _, station := range stations {
+		view := DiscoveryStation{RadioStation: station}
+		if id, ok := added[station.StationUUID]; ok {
+			view.AlreadyAdded = true
+			view.ExistingStreamID = id
+		}
+		views = append(views, view)
+	}
+	writeJSON(rw, http.StatusOK, map[string]any{"stations": views})
+}
+
+func (w *WebServer) handleDiscoveryRadioStation(rw http.ResponseWriter, r *http.Request) {
+	if w.app.discovery == nil {
+		writeError(rw, http.StatusNotFound, "radio discovery is disabled")
+		return
+	}
+	stationUUID := r.PathValue("uuid")
+	if _, err := uuid.Parse(stationUUID); err != nil {
+		writeError(rw, http.StatusBadRequest, "invalid station uuid")
+		return
+	}
+	station, err := w.app.discovery.ByUUID(r.Context(), stationUUID)
+	if err != nil {
+		if errors.Is(err, ErrStreamNotFound) {
+			writeError(rw, http.StatusNotFound, "station not found")
+			return
+		}
+		writeError(rw, http.StatusBadGateway, err.Error())
+		return
+	}
+	view := DiscoveryStation{RadioStation: station}
+	added, err := w.app.streams.StationUUIDs(r.Context())
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if id, ok := added[station.StationUUID]; ok {
+		view.AlreadyAdded = true
+		view.ExistingStreamID = id
+	}
+	writeJSON(rw, http.StatusOK, view)
+}
+
+func writeStreamError(rw http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrStreamNotFound):
+		writeError(rw, http.StatusNotFound, err.Error())
+	case errors.Is(err, ErrStreamConflict):
+		writeError(rw, http.StatusConflict, err.Error())
+	default:
+		writeError(rw, http.StatusBadRequest, err.Error())
+	}
 }
 
 func (w *WebServer) handleLogs(rw http.ResponseWriter, r *http.Request) {
@@ -422,9 +542,10 @@ func (w *WebServer) handleUploaderQueue(rw http.ResponseWriter, r *http.Request)
 
 func makeStreamView(app *App, eff StreamConfig, st WorkerStatus) StreamView {
 	return StreamView{
-		ID: eff.ID, Name: eff.Name, Type: eff.Type, URL: eff.URL,
+		ID: eff.ID, Source: eff.Source, Name: eff.Name, Type: eff.Type, URL: eff.URL,
 		Enabled: eff.Enabled, ChunkSeconds: eff.ChunkSeconds,
-		Audio: eff.Audio, Video: eff.Video, Metadata: eff.Metadata,
+		Audio: eff.Audio, Video: eff.Video, Metadata: eff.Metadata, Radio: eff.Radio,
+		CreatedAt: eff.CreatedAt, UpdatedAt: eff.UpdatedAt,
 		Running: st.Running, Stopped: app.isStopped(eff.ID), Error: st.Error,
 		LastActivity: st.LastActivity,
 	}

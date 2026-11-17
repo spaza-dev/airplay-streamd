@@ -52,12 +52,16 @@ func NewManager(app *App) *Manager {
 }
 
 func (m *Manager) StartEnabled() {
-	cfg := m.app.Config()
-	for _, base := range cfg.Streams {
-		if !base.Enabled || m.app.isStopped(base.ID) {
+	streams, err := m.app.ListStreams(context.Background())
+	if err != nil {
+		m.app.logger.Errorf("", "list enabled streams: %v", err)
+		return
+	}
+	for _, stream := range streams {
+		if !stream.Enabled || m.app.isStopped(stream.ID) {
 			continue
 		}
-		m.StartStream(base.ID)
+		m.StartStream(stream.ID)
 	}
 }
 
@@ -73,8 +77,11 @@ func (m *Manager) StartStream(id string) {
 	}
 	m.mu.Unlock()
 
-	cfg := m.app.Config()
-	eff, ok := cfg.FindStream(id)
+	eff, ok, err := m.app.FindStream(context.Background(), id)
+	if err != nil {
+		m.app.logger.Errorf(id, "cannot start: %v", err)
+		return
+	}
 	if !ok {
 		m.app.logger.Errorf(id, "cannot start: stream not found")
 		return

@@ -8,6 +8,8 @@ It provides:
 - A Unix-socket CLI and a localhost HTTP control API.
 - An embedded React/TypeScript dashboard.
 - A SQLite-backed upload queue with persisted retry state.
+- A SQLite stream store for custom sources and Radio Browser stations.
+- Radio Browser discovery in the dashboard, API, and CLI.
 - Per-stream configuration overrides and stream metadata published to object storage.
 
 The authoritative development specification is in [`docs/streamd-requirements.md`](docs/streamd-requirements.md). Implementation notes and task tracking are in [`streamd/docs/implementation-plan.md`](streamd/docs/implementation-plan.md) and [`streamd/docs/task-list.md`](streamd/docs/task-list.md). The related indexer specification is in [`docs/indexer.md`](docs/indexer.md).
@@ -54,7 +56,7 @@ The authoritative development specification is in [`docs/streamd-requirements.md
 - Optional cleanup of local chunks only after confirmed upload success.
 - One `meta.json` per stream at its S3 root, replaced in place on metadata updates.
 - No per-chunk metadata sidecar files.
-- CLI commands for stream management and logs.
+- CLI commands for stream management, radio discovery, and logs.
 - A read-only public `/api/streams` API with optional bearer authentication and Swagger UI.
 - Built-in CPU, memory, disk, network, backlog and per-stream usage metrics.
 - A capacity estimate that identifies the limiting resource and recommends how many additional streams fit.
@@ -102,13 +104,18 @@ The daemon owns all recording and upload processes. CLI commands only send contr
 └── streamd/
     ├── main.go                 # config, logging, runtime state, lifecycle
     ├── recorder.go             # stream manager, FFmpeg/yt-dlp workers
+    ├── streamstore.go          # SQLite stream schema and repository
+    ├── radiobrowser.go         # Radio Browser discovery client and cache
     ├── storage.go              # SQLite queue, S3 uploader, metadata publisher
     ├── metrics.go              # /proc sampling, capacity estimate, enforcement
     ├── web.go                  # HTTP/Unix API and embedded frontend
     ├── cli.go                  # CLI client and commands
     ├── config_test.go
     ├── metrics_test.go
+    ├── radiobrowser_test.go
     ├── storage_test.go
+    ├── streamstore_test.go
+    ├── web_test.go
     ├── config.yaml             # default system configuration
     ├── .env.example            # R2/S3 credential template
     ├── scripts/
@@ -188,15 +195,10 @@ uploader:
 logging:
   level: "debug"
   file: "/tmp/streamd-demo/streamd.log"
-streams:
-  - id: "demo"
-    name: "Demo Stream"
-    type: "direct"
-    url: "http://127.0.0.1:8099/live.ogg"
-    enabled: true
-    chunk_seconds: 5
-    metadata:
-      purpose: "demo"
+database:
+  path: "/tmp/streamd-demo/state/streamd.db"
+discovery:
+  enabled: true
 YAML
 
 # Generate a looping live OGG source on port 8099.
@@ -214,6 +216,14 @@ Start the daemon in another terminal:
 
 ```bash
 ./streamd serve --config /tmp/streamd-demo/config.yaml
+```
+
+Add the demo stream in another terminal:
+
+```bash
+./streamd stream add --config /tmp/streamd-demo/config.yaml \
+  --name "Demo Stream" --type direct --url "http://127.0.0.1:8099/live.ogg" \
+  --enabled --chunk-seconds 5
 ```
 
 Inspect it:
@@ -240,6 +250,7 @@ The demo intentionally disables the uploader. See [Installation](#installation) 
 | Configuration | `/etc/streamd/config.yaml` |
 | Secrets | `/etc/streamd/.env` |
 | Local chunks | `/var/lib/streamd/chunks` |
+| SQLite stream store | `/var/lib/streamd/state/streamd.db` |
 | SQLite queue | `/var/lib/streamd/state/uploads.db` |
 | Runtime state | `/var/lib/streamd/state/runtime.json` |
 | Service log | `/var/log/streamd/streamd.log` |
@@ -315,30 +326,17 @@ capacity:
   assumed_cpu_per_stream_percent: 1.5
   assumed_memory_per_stream_mb: 64
 
-streams:
-  - id: "capital-fm-ke"
-    name: "Capital FM Kenya"
-    type: "radio"
-    url: "https://example.com/stream"
-    enabled: true
-    chunk_seconds: 300
-    audio:
-      codec: "libopus"
-      container: "ogg"
-      bitrate: "96k"
-    metadata:
-      country: "Kenya"
-      city: "Nairobi"
-      language: "English"
 
-  - id: "youtube-channel"
-    name: "Example YouTube Channel"
-    type: "youtube"
-    url: "https://www.youtube.com/@example"
-    enabled: false
-    metadata:
-      platform: "YouTube"
-      channel: "Example Channel"
+database:
+  path: "/var/lib/streamd/state/streamd.db"
+
+discovery:
+  enabled: true
+  radio_browser_url: "https://all.api.radio-browser.info"
+  timeout_seconds: 10
+  cache_seconds: 300
+  max_results: 100
+
 ```
 
 ### Environment variables
@@ -442,25 +440,29 @@ Allowed codecs: `libx264`, `libx265`, `copy`.
 
 When video is disabled, FFmpeg receives `-vn` and the output uses the audio container. When video is enabled, the output uses the video container.
 
-### Stream settings
+### Stream management
 
-| Key | Required | Description |
-|---|---|---|
-| `id` | yes | 1–64 characters: letters, digits, `_`, `-`; must start with a letter or digit. |
-| `name` | no | Display name; defaults to `id`. |
-| `type` | yes | `radio`, `tv`, `hls`, `direct`, `youtube`, `twitch`, `web`. |
-| `url` | yes | Source URL. |
-| `enabled` | no | Starts automatically when the daemon starts. |
-| `chunk_seconds` | no | Per-stream chunk duration; `0` uses the global default. |
-| `audio` | no | Per-stream audio overrides. |
-| `video` | no | Per-stream video overrides. |
-| `metadata` | no | Arbitrary key/value metadata published in `meta.json`. |
+Streams are stored in SQLite at `database.path`; they are no longer read from `config.yaml`. On first start the store is created empty. Add streams through the dashboard, CLI, or control API.
+
+| Field | Description |
+|---|---|
+| `id` | Server-generated UUID. Radio Browser stations use the station UUID; custom streams get a new UUID v4. |
+| `source` | `radio-browser` or `custom`. |
+| `name` | Display name. Required. |
+| `type` | `radio`, `tv`, `hls`, `direct`, `youtube`, `twitch`, `web`. |
+| `url` | Source URL. Required. |
+| `enabled` | Starts automatically when the daemon starts. |
+| `chunk_seconds` | Per-stream chunk duration; `0` uses the global default. |
+| `audio` | Per-stream audio overrides. |
+| `video` | Per-stream video overrides. |
+| `metadata` | Arbitrary key/value metadata published in `meta.json`. |
+| `radio` | Full Radio Browser station record for discovered stations. |
 
 Allowed URL schemes: `http`, `https`, `rtmp`, `rtmps`, `rtsp`, `udp`, `mms`, `srt`. Types `youtube`, `twitch`, and `web` require an `http` or `https` URL.
 
-Per-stream `audio` and `video` objects override only the fields provided; unspecified fields inherit the global recording defaults.
+Per-stream `audio` and `video` objects override only the fields provided; unspecified fields inherit the global recording defaults. IDs are UUIDs and are used in filesystem paths and S3 keys.
 
-Stream IDs are used in filesystem paths and S3 keys. They are validated before use, and path traversal is rejected.
+`discovery.*` controls Radio Browser lookup. `max_results` caps both requested result counts and cached responses. Discovery results are not persisted until added.
 
 ### Source types
 
@@ -541,7 +543,7 @@ Rules:
 
 ```json
 {
-  "id": "capital-fm-ke",
+  "id": "4ec5158e-5204-4fad-a329-da356b4b0a05",
   "name": "Capital FM Kenya",
   "type": "radio",
   "format": "ogg",
@@ -581,7 +583,7 @@ Behavior:
 - Pending and retryable failed rows are checked for their local file; if it is missing, the row is permanently failed.
 - Local chunks are deleted only after a confirmed successful upload, and only when `cleanup_after_upload: true`.
 
-Runtime state is stored in `runtime.json` next to the queue database. It tracks manual stop flags and metadata `created_at` timestamps.
+Runtime state is stored in `runtime.json` next to the queue database. It tracks manual stop flags. Stream records and metadata timestamps live in the stream database.
 
 ---
 
@@ -595,7 +597,7 @@ Every command supports these flags:
 | `--env` | `.env` next to config | Environment/secrets file. |
 | `--json` | `false` | Emit JSON where supported. |
 
-> **Flag order:** flags must appear before positional arguments. This is standard Go flag parsing. For example, use `streamd stream show --config /etc/streamd/config.yaml capital-fm-ke`, not `streamd stream show capital-fm-ke --config ...`.
+> **Flag order:** flags must appear before positional arguments. This is standard Go flag parsing. For example, use `streamd stream show --config /etc/streamd/config.yaml 4ec5158e-5204-4fad-a329-da356b4b0a05`, not `streamd stream show 4ec5158e-5204-4fad-a329-da356b4b0a05 --config ...`.
 
 ### Service commands
 
@@ -613,63 +615,51 @@ streamd config validate
 streamd stream list
 streamd stream list --json
 
-streamd stream show capital-fm-ke
+streamd stream show 4ec5158e-5204-4fad-a329-da356b4b0a05
+
+streamd stream search --name "Capital" --limit 10
+streamd stream add --radio-uuid 4ec5158e-5204-4fad-a329-da356b4b0a05 --enabled
 
 streamd stream add \
-  --id capital-fm-ke \
-  --name "Capital FM Kenya" \
+  --name "Custom Radio" \
   --type radio \
   --url "https://example.com/stream" \
   --enabled \
   --metadata country=Kenya \
   --metadata city=Nairobi
 
-streamd stream update --name "Capital FM Kenya (New)" capital-fm-ke
-streamd stream update --enabled false capital-fm-ke
-streamd stream update --chunk-seconds 600 capital-fm-ke
+streamd stream update --name "Capital FM Kenya (New)" 4ec5158e-5204-4fad-a329-da356b4b0a05
+streamd stream update --enabled false 4ec5158e-5204-4fad-a329-da356b4b0a05
+streamd stream update --chunk-seconds 600 4ec5158e-5204-4fad-a329-da356b4b0a05
 
-streamd stream start capital-fm-ke
-streamd stream start --force capital-fm-ke   # override capacity enforcement
-streamd stream stop capital-fm-ke
-streamd stream restart capital-fm-ke
-streamd stream remove capital-fm-ke
+streamd stream start 4ec5158e-5204-4fad-a329-da356b4b0a05
+streamd stream start --force 4ec5158e-5204-4fad-a329-da356b4b0a05   # override capacity enforcement
+streamd stream stop 4ec5158e-5204-4fad-a329-da356b4b0a05
+streamd stream restart 4ec5158e-5204-4fad-a329-da356b4b0a05
+streamd stream remove 4ec5158e-5204-4fad-a329-da356b4b0a05
 ```
 
-Stream add/update flags:
+Stream search flags: `--name`, `--country`, `--countrycode`, `--state`, `--language`, `--tag`, `--codec`, `--limit`.
+
+Stream add flags:
 
 | Flag | Description |
 |---|---|
-| `--id` | Stream ID (add only; positional ID also accepted). |
-| `--name` | Display name. |
-| `--type` | Source type. |
-| `--url` | Source URL. |
-| `--enabled` | Add: boolean flag. Update: literal `true` or `false`. |
+| `--radio-uuid` | Add a Radio Browser station by UUID. The station UUID becomes the stream ID. |
+| `--name` | Display name (required for custom streams). |
+| `--type` | Source type (required for custom streams). |
+| `--url` | Source URL (required for custom streams). |
+| `--enabled` | Start automatically. |
 | `--chunk-seconds` | Per-stream chunk duration. |
-| `--file` | YAML stream definition, or `-` for stdin. |
 | `--metadata` | Repeatable `key=value`. |
 
-YAML stream definition example:
-
-```bash
-streamd stream add --id radio-one --file - <<'YAML'
-id: radio-one
-name: Radio One
-type: radio
-url: https://example.com/radio.mp3
-enabled: true
-chunk_seconds: 300
-metadata:
-  country: Kenya
-YAML
-```
-
-The stream ID is required via `--id` or a positional argument, even when `--file` is used. If both are supplied, `--id` wins.
+Stream update flags: `--name`, `--type`, `--url`, `--enabled`, `--chunk-seconds`, `--metadata`. IDs are server-generated UUIDs and cannot be changed.
 
 ### Logs
 
 ```bash
 streamd logs
-streamd logs capital-fm-ke
+streamd logs 4ec5158e-5204-4fad-a329-da356b4b0a05
 streamd logs --level warn --limit 50
 streamd logs --search "upload failed" --limit 20
 ```
@@ -682,7 +672,7 @@ Log flags: `--level` (`debug`, `info`, `warn`, `error`), `--search`, `--limit`.
 streamd config validate
 ```
 
-This loads the configuration and `.env`, then prints the validated streams and exits non-zero on error.
+This loads the configuration and `.env`, validates it, prints the database and discovery settings, and exits non-zero on error. Stream records are validated when added or updated.
 
 ---
 
@@ -748,6 +738,15 @@ Returns the current host and per-stream metrics, a short in-memory history, and 
 }
 ```
 
+### Radio discovery
+
+```http
+GET /control/discovery/radio?name=Capital&country=Kenya&limit=20
+GET /control/discovery/radio/{stationuuid}
+```
+
+Proxies Radio Browser search and station lookup through the daemon. Search parameters: `name`, `country`, `countrycode`, `state`, `language`, `tag`, `codec`, `limit`, `offset`, `hidebroken`, `order`, `reverse`. Each result includes `already_added` and, when present, `existing_stream_id`. Returns `404` when discovery is disabled and `502` for upstream failures.
+
 ### Read-only public API
 
 ```http
@@ -760,7 +759,7 @@ Returns overview data for streams with `enabled: true`. The response intentional
 {
   "streams": [
     {
-      "id": "capital-fm-ke",
+      "id": "4ec5158e-5204-4fad-a329-da356b4b0a05",
       "name": "Capital FM Kenya",
       "status": "running",
       "type": "radio",
@@ -813,13 +812,14 @@ DELETE /control/streams/{id}
 POST   /control/streams/{id}/start
 POST   /control/streams/{id}/stop
 POST   /control/streams/{id}/restart
+GET    /control/discovery/radio
+GET    /control/discovery/radio/{stationuuid}
 ```
 
 Add/update request body:
 
 ```json
 {
-  "id": "capital-fm-ke",
   "name": "Capital FM Kenya",
   "type": "radio",
   "url": "https://example.com/stream",
@@ -839,18 +839,27 @@ Add/update request body:
 }
 ```
 
-Unknown JSON fields are rejected with `400 Bad Request`. `audio` and `video` are optional.
+Unknown JSON fields are rejected with `400 Bad Request`. `audio` and `video` are optional. The server generates the UUID and returns it as `{"ok":true,"id":"..."}`; client-supplied `id` values are ignored.
+
+To add a Radio Browser station, send its full station record as `radio`:
+
+```json
+{"radio":{"stationuuid":"4ec5158e-5204-4fad-a329-da356b4b0a05","name":"Capital FM","url":"https://example.com/stream"}}
+```
+
+Duplicate station UUIDs return `409 Conflict`.
 
 Examples:
 
 ```bash
 curl http://127.0.0.1:8787/control/streams
-curl http://127.0.0.1:8787/control/streams/capital-fm-ke
+curl 'http://127.0.0.1:8787/control/discovery/radio?name=Capital&limit=10'
+curl http://127.0.0.1:8787/control/streams/4ec5158e-5204-4fad-a329-da356b4b0a05
 
-curl -X POST http://127.0.0.1:8787/control/streams/capital-fm-ke/stop
-curl -X POST http://127.0.0.1:8787/control/streams/capital-fm-ke/start
-curl -X POST 'http://127.0.0.1:8787/control/streams/capital-fm-ke/start?force=true'
-curl -X POST http://127.0.0.1:8787/control/streams/capital-fm-ke/restart
+curl -X POST http://127.0.0.1:8787/control/streams/4ec5158e-5204-4fad-a329-da356b4b0a05/stop
+curl -X POST http://127.0.0.1:8787/control/streams/4ec5158e-5204-4fad-a329-da356b4b0a05/start
+curl -X POST 'http://127.0.0.1:8787/control/streams/4ec5158e-5204-4fad-a329-da356b4b0a05/start?force=true'
+curl -X POST http://127.0.0.1:8787/control/streams/4ec5158e-5204-4fad-a329-da356b4b0a05/restart
 ```
 
 Starting a stream returns `409 Conflict` with a `capacity` object when the server is at capacity and `capacity.enforce` is enabled. Add `?force=true` to override.
@@ -908,7 +917,8 @@ The dashboard is embedded in the binary and served at `/`.
 
 Main views:
 
-- **Streams**: name, ID, type, recording state, enabled state, last activity, start/stop/restart actions, search, type/status filters, pagination.
+- **Streams**: name, UUID, type, source, recording state, enabled state, last activity, start/stop/restart actions, search, type/status filters, pagination.
+- **Add stream**: Radio Browser station search with one-click add, or a custom source form without a user-supplied ID.
 - **Stream details drawer**: Overview (including CPU, memory, output rate and chunk rate), Metadata, Logs.
 - **System**: host CPU/memory/disk/network metrics, capacity recommendation, limiting-resource bars, CPU/network/backlog sparklines, and per-stream usage.
 - **Logs**: service-wide or per-stream, with level and search filters.
@@ -947,7 +957,7 @@ sudo ./scripts/install.sh
    - state and log directories: `0750 streamd:streamd`
 10. Enables the socket and service, starts them, and verifies the service is active.
 
-The service user can read `.env` and write `config.yaml` (for CLI/API stream changes). Users outside `root` and the `streamd` group cannot read the secrets.
+The service user can read `.env` and write the state directory for the stream database and upload queue. Users outside `root` and the `streamd` group cannot read the secrets.
 
 If the installer copies `.env.example`, the uploader will fail validation until credentials are filled in. Edit the file and restart:
 

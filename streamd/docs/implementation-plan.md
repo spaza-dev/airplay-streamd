@@ -46,8 +46,9 @@ Recording and uploading are independent. Recording never waits on storage.
 1. Load `.env` (default: same directory as config; overridable with `--env`).
 2. Read YAML config (default `/etc/streamd/config.yaml`; `--config` override).
 3. Expand `${VAR}` with `os.ExpandEnv`.
-4. Apply defaults, merge per-stream overrides, validate.
+4. Apply defaults, validate service configuration.
 5. Never log expanded secrets.
+6. Open the SQLite stream store; YAML never defines streams.
 
 ### 4.2 Model
 
@@ -56,11 +57,15 @@ Recording and uploading are independent. Recording never waits on storage.
 - `uploader`: enabled, queue DB, concurrency, retry policy, cleanup flag.
 - `storage`: endpoint, region, bucket, keys, `force_path_style`.
 - `logging`: level, file.
-- `streams[]`: `id`, `name`, `type`, `url`, `enabled`, optional `chunk_seconds`, optional `audio`/`video` overrides, dynamic `metadata`.
+- `metrics`, `capacity`: sampling and capacity policy.
+- `database`: `path` to the SQLite stream store.
+- `discovery`: Radio Browser enable flag, base URL, timeout, cache, result cap.
+
+Stream records live in SQLite, not YAML: `id`, `source`, `name`, `type`, `url`, `enabled`, optional `chunk_seconds`, optional `audio`/`video`, dynamic `metadata`, optional full `radio` station, timestamps.
 
 ### 4.3 Validation
 
-- Stream ID: `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`; uniqueness; safe for paths/object keys.
+- Stream ID: UUID; Radio Browser stations use `stationuuid`; custom streams get UUID v4; uniqueness; safe for paths/object keys.
 - Type: `radio|tv|hls|direct|youtube|twitch|web`.
 - URL scheme allowlist: `http, https, rtmp, rtmps, rtsp, udp, mms, srt`.
 - Codec/container pairs: `libopus→ogg`, `aac→m4a/aac`, `libmp3lame→mp3`, `copy` only with compatible container.
@@ -69,7 +74,7 @@ Recording and uploading are independent. Recording never waits on storage.
 
 ### 4.4 Persistence
 
-Stream add/update/remove is written back atomically (`temp file + rename`, mode `0640`) to `config.yaml`. The daemon owns the config; CLI never edits it directly.
+Stream add/update/remove writes to SQLite at `database.path` (`PRAGMA user_version=1`). `config.yaml` is read-only service configuration; CLI and API never edit it directly.
 
 ## 5. Runtime state
 
@@ -158,12 +163,14 @@ Use the spec schema plus indexes. Statuses: `pending`, `uploading`, `failed`, `c
 - `GET /control/logs/stream/{id}`
 - `GET /control/uploader/status`
 - `GET /control/uploader/queue?status=&limit=`
+- `GET /control/discovery/radio?name=&country=&limit=...`
+- `GET /control/discovery/radio/{stationuuid}`
 
 JSON emits runtime `running`, `stopped`, `error`, `last_activity`. Uploader responses omit credentials and local paths. HTTP and Unix-socket listeners share one handler; default bind is `127.0.0.1:8787`.
 
 ## 9. CLI (`cli.go`)
 
-`streamd serve`, `status`, `stream list|show|add|update|remove|start|stop|restart`, `logs [stream]`, `config validate`. Global flags: `--config`, `--env`, `--json`. Client dials the configured Unix socket; no separate recording/upload process. Stream add/update accepts YAML via `--file`/stdin and common flags.
+`streamd serve`, `status`, `stream list|show|search|add|update|remove|start|stop|restart`, `logs [stream]`, `config validate`. Global flags: `--config`, `--env`, `--json`. Client dials the configured Unix socket; no separate recording/upload process. `stream add` accepts flags or `--radio-uuid`; stream YAML is no longer supported.
 
 ## 10. Frontend (`web/`)
 
@@ -172,7 +179,7 @@ JSON emits runtime `running`, `stopped`, `error`, `last_activity`. Uploader resp
 - **Streams view:** table with name/ID, type, status, enabled, last activity, start/stop/restart; search, status/type filters, pagination; uploader status strip.
 - **Stream drawer (`Panel`):** Overview, Metadata, Logs tabs.
 - **Logs view:** service and per-stream logs with search/level filter.
-- Add/Edit/Delete stream dialogs; polling refresh.
+- Add/Edit/Delete stream dialogs; Radio Browser search with one-click add; polling refresh.
 - Build output embedded with `//go:embed all:web/dist`.
 
 ## 11. Deployment

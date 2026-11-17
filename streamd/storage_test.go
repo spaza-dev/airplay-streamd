@@ -33,7 +33,7 @@ func TestStoreLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.Enqueue(QueueItem{
-		StreamID: "s1", LocalPath: local, ObjectKey: "s1/recordings/2026/01/01/120000.ogg",
+		StreamID: testID("s1"), LocalPath: local, ObjectKey: "s1/recordings/2026/01/01/120000.ogg",
 		FileSize: 5, CreatedAt: now,
 	}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -61,7 +61,7 @@ func TestStoreLifecycle(t *testing.T) {
 	if err := os.WriteFile(missing, []byte("more"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Enqueue(QueueItem{StreamID: "s1", LocalPath: missing, ObjectKey: "s1/recordings/second.ogg", FileSize: 4}); err != nil {
+	if err := store.Enqueue(QueueItem{StreamID: testID("s1"), LocalPath: missing, ObjectKey: "s1/recordings/second.ogg", FileSize: 4}); err != nil {
 		t.Fatal(err)
 	}
 	failed, err := store.Claim(time.Now().UTC())
@@ -101,7 +101,7 @@ func TestStoreRecover(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{existing, filepath.Join(dir, "gone.ogg")} {
-		if err := store.Enqueue(QueueItem{StreamID: "s1", LocalPath: path, ObjectKey: "k", FileSize: 1, CreatedAt: now}); err != nil {
+		if err := store.Enqueue(QueueItem{StreamID: testID("s1"), LocalPath: path, ObjectKey: "k", FileSize: 1, CreatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -139,14 +139,11 @@ func TestStoreRecover(t *testing.T) {
 func TestHandleSegmentLineFinalizesAndEnqueues(t *testing.T) {
 	dir := t.TempDir()
 	cfg := validTestConfig(t, dir)
-	cfg.Streams = []StreamConfig{{
-		ID: "s1", Name: "S1", Type: "direct", URL: "https://example.com/live.ogg", Enabled: true,
-	}}
 	logger, err := NewLogger("error", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := &RuntimeState{Stopped: map[string]bool{}, MetaCreatedAt: map[string]string{}}
+	state := &RuntimeState{Stopped: map[string]bool{}}
 	app := newApp(filepath.Join(dir, "config.yaml"), "", &cfg, logger, state, filepath.Join(dir, "runtime.json"))
 	store, err := OpenStore(cfg.Uploader.QueueDB)
 	if err != nil {
@@ -155,10 +152,12 @@ func TestHandleSegmentLineFinalizesAndEnqueues(t *testing.T) {
 	defer store.Close()
 	app.uploader = &Uploader{app: app, store: store, cfg: cfg.Uploader}
 
-	eff := cfg.effectiveStream(cfg.Streams[0])
+	eff := cfg.effectiveStream(StreamConfig{
+		ID: testID("s1"), Name: "S1", Type: "direct", URL: "https://example.com/live.ogg", Enabled: true,
+	})
 	w := &Worker{app: app, stream: eff}
 
-	incoming := filepath.Join(cfg.Recording.OutputDir, "s1", ".incoming")
+	incoming := filepath.Join(cfg.Recording.OutputDir, testID("s1"), ".incoming")
 	if err := os.MkdirAll(incoming, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +173,7 @@ func TestHandleSegmentLineFinalizesAndEnqueues(t *testing.T) {
 	writeChunk("20260101120000.ogg", 42)
 	w.handleSegmentLine(cfg, "20260101120000.ogg,0.000000,5.000000", seen)
 
-	target := filepath.Join(cfg.Recording.OutputDir, "s1", "2026-01-01", "120000.ogg")
+	target := filepath.Join(cfg.Recording.OutputDir, testID("s1"), "2026-01-01", "120000.ogg")
 	if info, err := os.Stat(target); err != nil || info.Size() != 42 {
 		t.Fatalf("finalized chunk missing: %v", err)
 	}
@@ -182,7 +181,7 @@ func TestHandleSegmentLineFinalizesAndEnqueues(t *testing.T) {
 	if err != nil || len(items) != 1 {
 		t.Fatalf("queued items = %+v err=%v", items, err)
 	}
-	if items[0].ObjectKey != "s1/recordings/2026/01/01/120000.ogg" {
+	if items[0].ObjectKey != testID("s1")+"/recordings/2026/01/01/120000.ogg" {
 		t.Fatalf("object key = %q", items[0].ObjectKey)
 	}
 
@@ -194,7 +193,7 @@ func TestHandleSegmentLineFinalizesAndEnqueues(t *testing.T) {
 
 	writeChunk("20260101120000.ogg", 7)
 	w.handleSegmentLine(cfg, "20260101120000.ogg,0.000000,5.000000", seen)
-	second := filepath.Join(cfg.Recording.OutputDir, "s1", "2026-01-01", "120000-1.ogg")
+	second := filepath.Join(cfg.Recording.OutputDir, testID("s1"), "2026-01-01", "120000-1.ogg")
 	if _, err := os.Stat(second); err != nil {
 		t.Fatalf("collision chunk missing: %v", err)
 	}
@@ -265,15 +264,11 @@ func newUploaderTestApp(t *testing.T, dir, endpoint string) (*App, Config) {
 		Endpoint: endpoint, Region: "auto", Bucket: "test-bucket",
 		AccessKeyID: "key", SecretAccessKey: "secret", ForcePathStyle: true,
 	}
-	cfg.Streams = []StreamConfig{{
-		ID: "s1", Name: "S1", Type: "direct", URL: "https://example.com/live.ogg", Enabled: true,
-		Metadata: map[string]any{"country": "NL"},
-	}}
 	logger, err := NewLogger("error", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := &RuntimeState{Stopped: map[string]bool{}, MetaCreatedAt: map[string]string{}}
+	state := &RuntimeState{Stopped: map[string]bool{}}
 	app := newApp(filepath.Join(dir, "config.yaml"), "", &cfg, logger, state, filepath.Join(dir, "runtime.json"))
 	return app, cfg
 }
@@ -309,7 +304,7 @@ func TestUploaderUploadsAndCleansUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := up.Enqueue(QueueItem{
-		StreamID: "s1", LocalPath: local, ObjectKey: "s1/recordings/2026/01/01/120000.ogg",
+		StreamID: testID("s1"), LocalPath: local, ObjectKey: "s1/recordings/2026/01/01/120000.ogg",
 		FileSize: 11, CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -330,13 +325,16 @@ func TestUploaderUploadsAndCleansUp(t *testing.T) {
 		t.Fatalf("local chunk not cleaned up: %v", err)
 	}
 
-	eff := cfg.effectiveStream(cfg.Streams[0])
+	eff := cfg.effectiveStream(StreamConfig{
+		ID: testID("s1"), Name: "S1", Type: "direct", URL: "https://example.com/live.ogg", Enabled: true,
+		Metadata: map[string]any{"country": "NL"},
+	})
 	up.PublishMeta(eff)
 	waitFor(t, 10*time.Second, func() bool {
-		_, _, ok := fake.get("/test-bucket/s1/meta.json")
+		_, _, ok := fake.get("/test-bucket/" + testID("s1") + "/meta.json")
 		return ok
 	})
-	metaBody, metaType, _ := fake.get("/test-bucket/s1/meta.json")
+	metaBody, metaType, _ := fake.get("/test-bucket/" + testID("s1") + "/meta.json")
 	if metaType != "application/json" {
 		t.Fatalf("meta content type = %q", metaType)
 	}
@@ -344,7 +342,7 @@ func TestUploaderUploadsAndCleansUp(t *testing.T) {
 	if err := json.Unmarshal(metaBody, &doc); err != nil {
 		t.Fatalf("meta JSON: %v", err)
 	}
-	if doc["id"] != "s1" || doc["name"] != "S1" || doc["format"] != "ogg" {
+	if doc["id"] != testID("s1") || doc["name"] != "S1" || doc["format"] != "ogg" {
 		t.Fatalf("meta doc = %+v", doc)
 	}
 	if _, exists := doc["url"]; exists {
@@ -373,7 +371,7 @@ func TestStoreConcurrentEnqueueAndClaim(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			if err := store.Enqueue(QueueItem{
-				StreamID: "s1", LocalPath: local, ObjectKey: "k", FileSize: 1,
+				StreamID: testID("s1"), LocalPath: local, ObjectKey: "k", FileSize: 1,
 				CreatedAt: time.Now().UTC(),
 			}); err != nil {
 				errs <- err

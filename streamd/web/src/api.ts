@@ -1,4 +1,5 @@
 import {
+  DiscoveryStation,
   LogEntry,
   MetricsSnapshot,
   QueueItem,
@@ -65,6 +66,16 @@ export const api = {
   },
   add(stream: unknown): Promise<{ ok: boolean; id: string; warnings?: string[] }> {
     return request("/control/streams", { method: "POST", body: JSON.stringify(stream) });
+  },
+  searchRadio(params: Record<string, string | number | undefined>): Promise<{ stations: DiscoveryStation[] }> {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== "") query.set(key, String(value));
+    });
+    return request<{ stations: DiscoveryStation[] }>(`/control/discovery/radio?${query.toString()}`);
+  },
+  radioStation(id: string): Promise<DiscoveryStation> {
+    return request<DiscoveryStation>(`/control/discovery/radio/${encodeURIComponent(id)}`);
   },
   update(id: string, stream: unknown): Promise<{ ok: boolean }> {
     return request(`/control/streams/${encodeURIComponent(id)}`, {

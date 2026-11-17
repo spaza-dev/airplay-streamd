@@ -12,13 +12,13 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
 )
@@ -35,8 +35,7 @@ const (
 )
 
 var (
-	streamIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
-	bitratePattern  = regexp.MustCompile(`^[0-9]+k$`)
+	bitratePattern = regexp.MustCompile(`^[0-9]+k$`)
 
 	allowedStreamTypes = map[string]bool{
 		"radio": true, "tv": true, "hls": true, "direct": true,
@@ -89,7 +88,20 @@ type Config struct {
 	Logging   LoggingConfig   `yaml:"logging" json:"logging"`
 	Metrics   MetricsConfig   `yaml:"metrics" json:"metrics"`
 	Capacity  CapacityConfig  `yaml:"capacity" json:"capacity"`
-	Streams   []StreamConfig  `yaml:"streams" json:"streams"`
+	Database  DatabaseConfig  `yaml:"database" json:"database"`
+	Discovery DiscoveryConfig `yaml:"discovery" json:"discovery"`
+}
+
+type DatabaseConfig struct {
+	Path string `yaml:"path" json:"path"`
+}
+
+type DiscoveryConfig struct {
+	Enabled         bool   `yaml:"enabled" json:"enabled"`
+	RadioBrowserURL string `yaml:"radio_browser_url" json:"radio_browser_url"`
+	TimeoutSeconds  int    `yaml:"timeout_seconds" json:"timeout_seconds"`
+	CacheSeconds    int    `yaml:"cache_seconds" json:"cache_seconds"`
+	MaxResults      int    `yaml:"max_results" json:"max_results"`
 }
 
 type ServerConfig struct {
@@ -173,7 +185,8 @@ type CapacityConfig struct {
 }
 
 type StreamConfig struct {
-	ID           string         `yaml:"id" json:"id"`
+	ID           string         `yaml:"id,omitempty" json:"id"`
+	Source       string         `yaml:"source,omitempty" json:"source"`
 	Name         string         `yaml:"name" json:"name"`
 	Type         string         `yaml:"type" json:"type"`
 	URL          string         `yaml:"url" json:"url"`
@@ -182,6 +195,9 @@ type StreamConfig struct {
 	Audio        *AudioConfig   `yaml:"audio,omitempty" json:"audio,omitempty"`
 	Video        *VideoConfig   `yaml:"video,omitempty" json:"video,omitempty"`
 	Metadata     map[string]any `yaml:"metadata,omitempty" json:"metadata,omitempty"`
+	Radio        *RadioStation  `yaml:"radio,omitempty" json:"radio,omitempty"`
+	CreatedAt    time.Time      `yaml:"created_at,omitempty" json:"created_at,omitempty"`
+	UpdatedAt    time.Time      `yaml:"updated_at,omitempty" json:"updated_at,omitempty"`
 }
 
 func boolPtr(v bool) *bool { return &v }
@@ -236,6 +252,14 @@ func defaultConfig() Config {
 			MinFreeDiskGB:              1,
 			AssumedCPUPerStreamPercent: 1.5,
 			AssumedMemoryPerStreamMB:   64,
+		},
+		Database: DatabaseConfig{Path: "/var/lib/streamd/state/streamd.db"},
+		Discovery: DiscoveryConfig{
+			Enabled:         true,
+			RadioBrowserURL: "https://all.api.radio-browser.info",
+			TimeoutSeconds:  10,
+			CacheSeconds:    300,
+			MaxResults:      100,
 		},
 	}
 }
@@ -368,26 +392,32 @@ func (c *Config) Validate() error {
 	if capacity.AssumedMemoryPerStreamMB < 0 {
 		return errors.New("capacity.assumed_memory_per_stream_mb must not be negative")
 	}
-
-	seen := map[string]bool{}
-	for i := range c.Streams {
-		if err := c.validateStream(&c.Streams[i]); err != nil {
-			return fmt.Errorf("streams[%d]: %w", i, err)
+	if strings.TrimSpace(c.Database.Path) == "" {
+		return errors.New("database.path must not be empty")
+	}
+	if c.Discovery.Enabled {
+		if strings.TrimSpace(c.Discovery.RadioBrowserURL) == "" {
+			return errors.New("discovery.radio_browser_url must not be empty")
 		}
-		if seen[c.Streams[i].ID] {
-			return fmt.Errorf("duplicate stream id %q", c.Streams[i].ID)
+		if c.Discovery.TimeoutSeconds <= 0 {
+			return errors.New("discovery.timeout_seconds must be greater than zero")
 		}
-		seen[c.Streams[i].ID] = true
+		if c.Discovery.CacheSeconds < 0 {
+			return errors.New("discovery.cache_seconds must not be negative")
+		}
+		if c.Discovery.MaxResults <= 0 {
+			return errors.New("discovery.max_results must be greater than zero")
+		}
 	}
 	return nil
 }
 
-func (c *Config) validateStream(s *StreamConfig) error {
-	if !streamIDPattern.MatchString(s.ID) {
-		return fmt.Errorf("invalid id %q: use 1-64 characters of letters, digits, '_' or '-'", s.ID)
+func (c Config) validateStream(s *StreamConfig) error {
+	if _, err := uuid.Parse(s.ID); err != nil {
+		return fmt.Errorf("invalid id %q: must be a UUID", s.ID)
 	}
 	if strings.TrimSpace(s.Name) == "" {
-		s.Name = s.ID
+		return errors.New("name is required")
 	}
 	if !allowedStreamTypes[s.Type] {
 		return fmt.Errorf("unsupported type %q", s.Type)
@@ -547,24 +577,6 @@ func (c Config) streamFormat(s StreamConfig) string {
 	return s.Audio.Container
 }
 
-func (c Config) FindStream(id string) (StreamConfig, bool) {
-	for _, s := range c.Streams {
-		if s.ID == id {
-			return c.effectiveStream(s), true
-		}
-	}
-	return StreamConfig{}, false
-}
-
-func (c Config) FindBaseStream(id string) (StreamConfig, bool) {
-	for _, s := range c.Streams {
-		if s.ID == id {
-			return s, true
-		}
-	}
-	return StreamConfig{}, false
-}
-
 // ---------------------------------------------------------------------------
 // Logger
 // ---------------------------------------------------------------------------
@@ -691,12 +703,11 @@ func (l *Logger) Entries(stream, level, search string, limit int) []LogEntry {
 // ---------------------------------------------------------------------------
 
 type RuntimeState struct {
-	Stopped       map[string]bool   `json:"stopped"`
-	MetaCreatedAt map[string]string `json:"meta_created_at"`
+	Stopped map[string]bool `json:"stopped"`
 }
 
 func loadRuntimeState(path string) (*RuntimeState, error) {
-	st := &RuntimeState{Stopped: map[string]bool{}, MetaCreatedAt: map[string]string{}}
+	st := &RuntimeState{Stopped: map[string]bool{}}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -712,9 +723,6 @@ func loadRuntimeState(path string) (*RuntimeState, error) {
 	}
 	if st.Stopped == nil {
 		st.Stopped = map[string]bool{}
-	}
-	if st.MetaCreatedAt == nil {
-		st.MetaCreatedAt = map[string]string{}
 	}
 	return st, nil
 }
@@ -751,9 +759,11 @@ type App struct {
 
 	logger *Logger
 
-	recorder *Manager
-	uploader *Uploader
-	metrics  *MetricsCollector
+	streams   *StreamStore
+	discovery *RadioBrowserClient
+	recorder  *Manager
+	uploader  *Uploader
+	metrics   *MetricsCollector
 
 	startTime time.Time
 	ctx       context.Context
@@ -777,31 +787,6 @@ func (a *App) Config() Config {
 
 func (a *App) loggerFor(id string) *Logger { return a.logger }
 
-func (a *App) saveConfigLocked() error {
-	snapshot := *a.cfg
-	if snapshot.Server.AdminToken != "" {
-		snapshot.Server.AdminToken = "${STREAMD_ADMIN_TOKEN}"
-	}
-	if snapshot.Storage.AccessKeyID != "" {
-		snapshot.Storage.AccessKeyID = "${S3_ACCESS_KEY_ID}"
-	}
-	if snapshot.Storage.SecretAccessKey != "" {
-		snapshot.Storage.SecretAccessKey = "${S3_SECRET_ACCESS_KEY}"
-	}
-	data, err := yaml.Marshal(snapshot)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(a.cfgPath), 0o750); err != nil {
-		return err
-	}
-	tmpPath := a.cfgPath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o640); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, a.cfgPath)
-}
-
 func (a *App) saveStateLocked() error {
 	return saveRuntimeState(a.statePath, a.state)
 }
@@ -823,38 +808,66 @@ func (a *App) setStopped(id string, stopped bool) error {
 	return a.saveStateLocked()
 }
 
-func (a *App) metaCreatedAt(id string) (time.Time, error) {
-	a.stateMu.Lock()
-	defer a.stateMu.Unlock()
-	if v := a.state.MetaCreatedAt[id]; v != "" {
-		if t, err := time.Parse(time.RFC3339, v); err == nil {
-			return t, nil
+func (a *App) ListStreams(ctx context.Context) ([]StreamConfig, error) {
+	return a.streams.List(ctx)
+}
+
+func (a *App) FindStream(ctx context.Context, id string) (StreamConfig, bool, error) {
+	stream, ok, err := a.streams.Get(ctx, id)
+	if err != nil || !ok {
+		return StreamConfig{}, ok, err
+	}
+	return a.Config().effectiveStream(stream), true, nil
+}
+
+func (a *App) AddStream(s StreamConfig) (StreamConfig, []string, error) {
+	if s.Radio != nil {
+		if _, err := uuid.Parse(s.Radio.StationUUID); err != nil {
+			return StreamConfig{}, nil, fmt.Errorf("invalid station uuid %q", s.Radio.StationUUID)
+		}
+		s.ID = s.Radio.StationUUID
+		s.Source = "radio-browser"
+		if strings.TrimSpace(s.Name) == "" {
+			s.Name = s.Radio.Name
+		}
+		if strings.TrimSpace(s.URL) == "" {
+			s.URL = s.Radio.resolvedURL()
+		}
+		if s.Type == "" {
+			if s.Radio.IsHLS() {
+				s.Type = "hls"
+			} else {
+				s.Type = "radio"
+			}
+		}
+		s.Metadata = stationMetadata(s.Radio, s.Metadata)
+	} else {
+		s.ID = uuid.NewString()
+		s.Source = "custom"
+	}
+	if s.Name == "" {
+		s.Name = s.ID
+	}
+	if err := a.Config().validateStream(&s); err != nil {
+		return StreamConfig{}, nil, err
+	}
+	ctx := context.Background()
+	if s.Radio != nil {
+		existing, ok, err := a.streams.GetByStationUUID(ctx, s.Radio.StationUUID)
+		if err != nil {
+			return StreamConfig{}, nil, err
+		}
+		if ok {
+			return StreamConfig{}, nil, fmt.Errorf("%w: station already added as %s", ErrStreamConflict, existing.ID)
 		}
 	}
 	now := time.Now().UTC()
-	a.state.MetaCreatedAt[id] = now.Format(time.RFC3339)
-	return now, a.saveStateLocked()
-}
-
-func (a *App) AddStream(s StreamConfig) ([]string, error) {
-	a.cfgMu.Lock()
-	if _, ok := a.cfg.FindBaseStream(s.ID); ok {
-		a.cfgMu.Unlock()
-		return nil, fmt.Errorf("stream %q already exists", s.ID)
+	s.CreatedAt = now
+	s.UpdatedAt = now
+	if err := a.streams.Create(ctx, s); err != nil {
+		return StreamConfig{}, nil, err
 	}
-	tmp := *a.cfg
-	tmp.Streams = append(append([]StreamConfig{}, a.cfg.Streams...), s)
-	if err := tmp.validateStream(&tmp.Streams[len(tmp.Streams)-1]); err != nil {
-		a.cfgMu.Unlock()
-		return nil, err
-	}
-	a.cfg.Streams = tmp.Streams
-	if err := a.saveConfigLocked(); err != nil {
-		a.cfgMu.Unlock()
-		return nil, err
-	}
-	eff, _ := a.cfg.FindStream(s.ID)
-	a.cfgMu.Unlock()
+	eff := a.Config().effectiveStream(s)
 
 	var warnings []string
 	if a.metrics != nil {
@@ -871,37 +884,32 @@ func (a *App) AddStream(s StreamConfig) ([]string, error) {
 	if eff.Enabled && !a.isStopped(eff.ID) {
 		a.recorder.StartStream(eff.ID)
 	}
-	return warnings, nil
+	return s, warnings, nil
 }
 
 func (a *App) UpdateStream(id string, s StreamConfig) error {
+	ctx := context.Background()
+	existing, ok, err := a.streams.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrStreamNotFound
+	}
 	s.ID = id
-	a.cfgMu.Lock()
-	idx := -1
-	for i := range a.cfg.Streams {
-		if a.cfg.Streams[i].ID == id {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		a.cfgMu.Unlock()
-		return fmt.Errorf("stream %q not found", id)
-	}
+	s.Source = existing.Source
+	s.Radio = existing.Radio
+	s.CreatedAt = existing.CreatedAt
 	if s.Name == "" {
-		s.Name = a.cfg.Streams[idx].Name
+		s.Name = existing.Name
 	}
-	if err := a.cfg.validateStream(&s); err != nil {
-		a.cfgMu.Unlock()
+	if err := a.Config().validateStream(&s); err != nil {
 		return err
 	}
-	a.cfg.Streams[idx] = s
-	if err := a.saveConfigLocked(); err != nil {
-		a.cfgMu.Unlock()
+	if err := a.streams.Update(ctx, s); err != nil {
 		return err
 	}
-	eff, _ := a.cfg.FindStream(id)
-	a.cfgMu.Unlock()
+	eff := a.Config().effectiveStream(s)
 
 	a.logger.Infof(id, "stream updated")
 	if a.uploader != nil {
@@ -909,7 +917,7 @@ func (a *App) UpdateStream(id string, s StreamConfig) error {
 	}
 	if !eff.Enabled {
 		a.recorder.StopStream(id, false)
-		a.setStopped(id, false)
+		_ = a.setStopped(id, false)
 	} else if a.isStopped(id) {
 		a.recorder.StopStream(id, false)
 	} else {
@@ -919,40 +927,28 @@ func (a *App) UpdateStream(id string, s StreamConfig) error {
 }
 
 func (a *App) RemoveStream(id string) error {
-	a.cfgMu.Lock()
-	idx := -1
-	for i := range a.cfg.Streams {
-		if a.cfg.Streams[i].ID == id {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		a.cfgMu.Unlock()
-		return fmt.Errorf("stream %q not found", id)
-	}
-	a.cfg.Streams = append(a.cfg.Streams[:idx], a.cfg.Streams[idx+1:]...)
-	if err := a.saveConfigLocked(); err != nil {
-		a.cfgMu.Unlock()
+	ctx := context.Background()
+	if err := a.streams.Delete(ctx, id); err != nil {
 		return err
 	}
-	a.cfgMu.Unlock()
-
 	a.recorder.StopStream(id, false)
-	a.setStopped(id, false)
+	_ = a.setStopped(id, false)
 	a.logger.Infof(id, "stream removed")
 	return nil
 }
 
 func (a *App) StartStream(id string, force bool) error {
-	cfg := a.Config()
-	if _, ok := cfg.FindStream(id); !ok {
-		return fmt.Errorf("stream %q not found", id)
+	eff, ok, err := a.FindStream(context.Background(), id)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrStreamNotFound
 	}
 	if status, ok := a.recorder.Status(id); ok && status.Running {
 		return nil
 	}
-	if !force && cfg.Capacity.Enforce && a.metrics != nil {
+	if !force && a.Config().Capacity.Enforce && a.metrics != nil {
 		snapshot := a.metrics.Snapshot()
 		if snapshot.Capacity.Confidence == "measured" && snapshot.Capacity.Status == "at_capacity" {
 			return &CapacityExceededError{StreamID: id, Estimate: snapshot.Capacity}
@@ -961,13 +957,15 @@ func (a *App) StartStream(id string, force bool) error {
 	if err := a.setStopped(id, false); err != nil {
 		return err
 	}
-	a.recorder.StartStream(id)
+	a.recorder.StartStream(eff.ID)
 	return nil
 }
 
 func (a *App) StopStream(id string) error {
-	if _, ok := a.Config().FindStream(id); !ok {
-		return fmt.Errorf("stream %q not found", id)
+	if _, ok, err := a.FindStream(context.Background(), id); err != nil {
+		return err
+	} else if !ok {
+		return ErrStreamNotFound
 	}
 	if err := a.setStopped(id, true); err != nil {
 		return err
@@ -977,8 +975,10 @@ func (a *App) StopStream(id string) error {
 }
 
 func (a *App) RestartStream(id string) error {
-	if _, ok := a.Config().FindStream(id); !ok {
-		return fmt.Errorf("stream %q not found", id)
+	if _, ok, err := a.FindStream(context.Background(), id); err != nil {
+		return err
+	} else if !ok {
+		return ErrStreamNotFound
 	}
 	if err := a.setStopped(id, false); err != nil {
 		return err
@@ -987,17 +987,44 @@ func (a *App) RestartStream(id string) error {
 	return nil
 }
 
+func stationMetadata(station *RadioStation, existing map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range existing {
+		out[key] = value
+	}
+	set := func(key, value string) {
+		if strings.TrimSpace(value) != "" {
+			out[key] = value
+		}
+	}
+	set("source", "radio-browser")
+	set("source_id", station.StationUUID)
+	set("country", station.Country)
+	set("country_code", station.CountryCode)
+	set("state", station.State)
+	set("language", station.Language)
+	set("tags", station.Tags)
+	set("codec", station.Codec)
+	set("homepage", station.Homepage)
+	set("favicon", station.Favicon)
+	if station.Bitrate > 0 {
+		out["bitrate"] = fmt.Sprintf("%d kbps", station.Bitrate)
+	}
+	return out
+}
+
 func (a *App) publishAllMetadata() {
 	if a.uploader == nil {
 		return
 	}
+	streams, err := a.ListStreams(context.Background())
+	if err != nil {
+		a.logger.Errorf("", "list streams for metadata: %v", err)
+		return
+	}
 	cfg := a.Config()
-	for _, base := range cfg.Streams {
-		eff, ok := cfg.FindStream(base.ID)
-		if !ok {
-			continue
-		}
-		a.uploader.PublishMeta(eff)
+	for _, base := range streams {
+		a.uploader.PublishMeta(cfg.effectiveStream(base))
 	}
 }
 
@@ -1011,6 +1038,9 @@ func (a *App) shutdown() {
 		a.uploader.Stop()
 	}
 	a.cancel()
+	if a.streams != nil {
+		_ = a.streams.Close()
+	}
 	a.stateMu.Lock()
 	_ = a.saveStateLocked()
 	a.stateMu.Unlock()
@@ -1057,7 +1087,8 @@ Usage:
   streamd status                Show daemon and stream status
   streamd stream list           List streams
   streamd stream show <id>      Show one stream
-  streamd stream add [id]       Add a stream (--file, or flags)
+  streamd stream search         Search Radio Browser stations
+  streamd stream add            Add a stream (--radio-uuid or flags)
   streamd stream update <id>    Update a stream
   streamd stream remove <id>    Remove a stream
   streamd stream start <id>     Start recording a stream (--force overrides capacity)
@@ -1092,10 +1123,20 @@ func cmdServe(args []string) error {
 	state, err := loadRuntimeState(statePath)
 	if err != nil {
 		logger.Errorf("", "load runtime state: %v", err)
-		state = &RuntimeState{Stopped: map[string]bool{}, MetaCreatedAt: map[string]string{}}
+		state = &RuntimeState{Stopped: map[string]bool{}}
 	}
 
+	streams, err := OpenStreamStore(cfg.Database.Path)
+	if err != nil {
+		logger.Errorf("", "open stream database: %v", err)
+		_ = logger.Close()
+		return fmt.Errorf("open stream database: %w", err)
+	}
 	app := newApp(*cfgPath, *envPath, cfg, logger, state, statePath)
+	app.streams = streams
+	if cfg.Discovery.Enabled {
+		app.discovery = NewRadioBrowserClient(cfg.Discovery)
+	}
 	app.recorder = NewManager(app)
 
 	if cfg.Uploader.Enabled {
@@ -1155,13 +1196,4 @@ func atoiOr(s string, def int) int {
 		return def
 	}
 	return n
-}
-
-func sortedIDs(cfg *Config) []string {
-	ids := make([]string, 0, len(cfg.Streams))
-	for _, s := range cfg.Streams {
-		ids = append(ids, s.ID)
-	}
-	sort.Strings(ids)
-	return ids
 }

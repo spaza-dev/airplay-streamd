@@ -8,7 +8,7 @@ import { Panel } from "azure-devops-ui/Panel";
 import { Spinner } from "azure-devops-ui/Spinner";
 import { MessageBar, MessageBarSeverity } from "azure-devops-ui/MessageBar";
 import { api } from "./api";
-import { LogEntry, MetricsSnapshot, StreamView, UploaderStatus } from "./types";
+import { DiscoveryStation, LogEntry, MetricsSnapshot, StreamView, UploaderStatus } from "./types";
 
 const STREAM_TYPES = ["radio", "tv", "hls", "direct", "youtube", "twitch", "web"];
 const LOG_LEVELS = ["debug", "info", "warn", "error"];
@@ -17,7 +17,6 @@ const PAGE_SIZE = 10;
 type PanelMode = "closed" | "detail" | "add" | "edit";
 
 interface StreamForm {
-  id: string;
   name: string;
   type: string;
   url: string;
@@ -28,7 +27,6 @@ interface StreamForm {
 
 function emptyForm(): StreamForm {
   return {
-    id: "",
     name: "",
     type: "radio",
     url: "",
@@ -40,7 +38,6 @@ function emptyForm(): StreamForm {
 
 function formFromStream(stream: StreamView): StreamForm {
   return {
-    id: stream.id,
     name: stream.name,
     type: stream.type,
     url: stream.url,
@@ -197,6 +194,9 @@ export function App() {
 
   const [panelMode, setPanelMode] = React.useState<PanelMode>("closed");
   const [form, setForm] = React.useState<StreamForm>(emptyForm());
+  const [radioQuery, setRadioQuery] = React.useState("");
+  const [radioResults, setRadioResults] = React.useState<DiscoveryStation[]>([]);
+  const [radioSearching, setRadioSearching] = React.useState(false);
 
   const refresh = React.useCallback(async () => {
     try {
@@ -361,6 +361,8 @@ export function App() {
   const openAdd = () => {
     setSelectedId(null);
     setForm(emptyForm());
+    setRadioQuery("");
+    setRadioResults([]);
     setPanelMode("add");
   };
 
@@ -376,12 +378,11 @@ export function App() {
   };
 
   const saveStream = async () => {
-    if (!form.id.trim() || !form.name.trim() || !form.url.trim()) {
-      setError("id, name and url are required");
+    if (!form.name.trim() || !form.url.trim() || !form.type.trim()) {
+      setError("name, type and url are required for a custom stream");
       return;
     }
     const payload: Record<string, unknown> = {
-      id: form.id.trim(),
       name: form.name.trim(),
       type: form.type,
       url: form.url.trim(),
@@ -393,7 +394,6 @@ export function App() {
       payload.chunk_seconds = chunk;
     }
     if (editing) {
-      payload.id = editing.id;
       payload.audio = editing.audio;
       payload.video = editing.video;
     }
@@ -405,10 +405,42 @@ export function App() {
         setNotice(`Stream ${editing.id} updated`);
       } else {
         const result = await api.add(payload);
-        setNotice(`Stream ${payload.id} added`);
+        setNotice(`Stream ${result.id} added`);
         if (result.warnings && result.warnings.length > 0) {
           setWarning(result.warnings.join(" "));
         }
+      }
+      setPanelMode("closed");
+      setSelectedId(null);
+      await refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const searchRadio = async () => {
+    setRadioSearching(true);
+    setError("");
+    try {
+      const data = await api.searchRadio({ name: radioQuery.trim(), limit: 25, hidebroken: "true" });
+      setRadioResults(data.stations);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRadioSearching(false);
+    }
+  };
+
+  const addRadio = async (station: DiscoveryStation) => {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api.add({ radio: station, enabled: form.enabled });
+      setNotice(`Stream ${result.id} added`);
+      if (result.warnings && result.warnings.length > 0) {
+        setWarning(result.warnings.join(" "));
       }
       setPanelMode("closed");
       setSelectedId(null);
@@ -708,6 +740,21 @@ export function App() {
                   </span>
                 </Definition>
                 <Definition label="Source type">{selected.type}</Definition>
+                <Definition label="Source">{selected.source || "custom"}</Definition>
+                {selected.radio ? (
+                  <>
+                    <Definition label="Station">{selected.radio.name}</Definition>
+                    <Definition label="Country">
+                      {selected.radio.country || "-"} {selected.radio.countrycode ? `(${selected.radio.countrycode})` : ""}
+                    </Definition>
+                    <Definition label="Codec">
+                      {selected.radio.codec || "-"} {selected.radio.bitrate ? `· ${selected.radio.bitrate} kbps` : ""}
+                    </Definition>
+                    <Definition label="Station UUID">
+                      <span className="streamd-mono streamd-break">{selected.radio.stationuuid}</span>
+                    </Definition>
+                  </>
+                ) : null}
                 <Definition label="Source URL">
                   <span className="streamd-break">{selected.url}</span>
                 </Definition>
@@ -782,22 +829,55 @@ export function App() {
             onDismiss={closePanel}
             contentClassName="streamd-panel-content"
             titleProps={{ text: panelMode === "edit" ? "Edit stream" : "Add stream" }}
-            description={panelMode === "edit" ? form.id : "Register a new capture source"}
+            description={panelMode === "edit" ? editing?.id : "Discover radio stations or register a custom source"}
             footerButtonProps={[
               { text: "Cancel", onClick: closePanel },
               { text: panelMode === "edit" ? "Save" : "Add", primary: true, onClick: saveStream },
             ]}
           >
+            {panelMode === "add" ? (
+              <div className="streamd-discovery">
+                <div className="streamd-discovery-search">
+                  <TextField
+                    value={radioQuery}
+                    onChange={(_event, value) => setRadioQuery(value || "")}
+                    placeholder="Search Radio Browser by station name"
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") searchRadio();
+                    }}
+                  />
+                  <Button
+                    text={radioSearching ? "Searching..." : "Search radio"}
+                    disabled={radioSearching || !radioQuery.trim()}
+                    onClick={searchRadio}
+                  />
+                </div>
+                {radioResults.length > 0 ? (
+                  <div className="streamd-discovery-results">
+                    {radioResults.map((station) => (
+                      <div className="streamd-discovery-row" key={station.stationuuid}>
+                        <div>
+                          <div className="streamd-name">{station.name}</div>
+                          <div className="streamd-muted streamd-small">
+                            {[station.country, station.codec, station.bitrate ? `${station.bitrate} kbps` : "", station.hls ? "HLS" : ""]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </div>
+                        </div>
+                        <Button
+                          text={station.already_added ? "Added" : "Add"}
+                          primary
+                          disabled={busy || station.already_added}
+                          onClick={() => addRadio(station)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                <div className="streamd-discovery-divider">or add a custom stream</div>
+              </div>
+            ) : null}
             <div className="streamd-form">
-              <label>
-                <span>ID</span>
-                <TextField
-                  value={form.id}
-                  disabled={panelMode === "edit"}
-                  onChange={(_event, value) => setForm({ ...form, id: value || "" })}
-                  placeholder="capital-fm-ke"
-                />
-              </label>
               <label>
                 <span>Name</span>
                 <TextField
