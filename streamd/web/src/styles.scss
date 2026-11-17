@@ -348,6 +348,10 @@ body {
   justify-content: center;
 }
 
+.streamd-table-wrap {
+  overflow-x: auto;
+}
+
 .streamd-table {
   width: 100%;
   border-collapse: collapse;
@@ -377,17 +381,29 @@ body {
   }
 }
 
+.streamd-streams-table {
+  min-width: 1180px;
+  table-layout: fixed;
+}
+
+.streamd-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .streamd-name {
   font-weight: 600;
 }
 
 .streamd-actions-col {
   text-align: right;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .streamd-row-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 2px;
   justify-content: flex-end;
 }
@@ -653,6 +669,15 @@ body {
   &:last-child {
     border-bottom: 0;
   }
+}
+
+.streamd-discovery-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.streamd-discovery-actions {
+  flex-shrink: 0;
 }
 
 .streamd-discovery-divider {

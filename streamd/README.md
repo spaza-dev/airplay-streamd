@@ -268,7 +268,7 @@ server:
   admin_token: "${STREAMD_ADMIN_TOKEN}"
 
 recording:
-  chunk_seconds: 300
+  chunk_seconds: 3600
   output_dir: "/var/lib/streamd/chunks"
   ffmpeg_path: "/usr/bin/ffmpeg"
   yt_dlp_path: "/usr/local/bin/yt-dlp"
@@ -375,7 +375,7 @@ The HTTP server binds to localhost by default. Do not expose it publicly without
 
 | Key | Default | Description |
 |---|---|---|
-| `recording.chunk_seconds` | `300` | Default chunk duration. |
+| `recording.chunk_seconds` | `3600` | Default chunk duration. |
 | `recording.output_dir` | `/var/lib/streamd/chunks` | Local chunk root. |
 | `recording.ffmpeg_path` | `/usr/bin/ffmpeg` | FFmpeg executable. |
 | `recording.yt_dlp_path` | `/usr/local/bin/yt-dlp` | yt-dlp executable. |
@@ -826,7 +826,7 @@ Add/update request body:
   "type": "radio",
   "url": "https://example.com/stream",
   "enabled": true,
-  "chunk_seconds": 300,
+  "chunk_seconds": 3600,
   "audio": {
     "codec": "libopus",
     "container": "ogg",
@@ -919,9 +919,9 @@ The dashboard is embedded in the binary and served at `/`.
 
 Main views:
 
-- **Streams**: name, UUID, type, country, source, recording state, enabled state, last activity, start/stop/restart actions, search, type/status/country filters, pagination.
-- **Add stream**: Radio Browser search by country with one-click add, or a custom source form without a user-supplied ID.
-- **Stream details drawer**: Overview (including CPU, memory, output rate and chunk rate), Metadata, Logs.
+- **Streams**: name, UUID, type, country, source, recording state, enabled state, last activity, start/stop/restart/remove actions, search, type/status/country filters, pagination. Long names, URLs, IDs, countries, and errors are truncated safely in the table.
+- **Add stream**: Radio Browser search by country with one-click add; the panel stays open so multiple stations can be added or removed, or use the custom source form without a user-supplied ID.
+- **Stream details drawer**: Overview (including CPU, memory, output rate and chunk rate), Metadata, Logs, and Delete.
 - **System**: host CPU/memory/disk/network metrics, capacity recommendation, limiting-resource bars, CPU/network/backlog sparklines, and per-stream usage.
 - **Logs**: service-wide or per-stream, with level and search filters.
 - **Uploader status strip**: pending, uploading, failed/retrying, completed, active uploads.

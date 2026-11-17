@@ -508,4 +508,15 @@ func TestAddRadioAndGetFullStream(t *testing.T) {
 	if view.CreatedAt.IsZero() || view.UpdatedAt.IsZero() {
 		t.Fatalf("timestamps = created=%v updated=%v", view.CreatedAt, view.UpdatedAt)
 	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/control/streams/"+created.ID, nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	rr = serveRequest(t, ws, "/control/streams/"+created.ID, nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("get after delete status = %d body=%s", rr.Code, rr.Body.String())
+	}
 }

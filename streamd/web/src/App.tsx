@@ -31,7 +31,7 @@ function emptyForm(): StreamForm {
     type: "radio",
     url: "",
     enabled: false,
-    chunk_seconds: "",
+    chunk_seconds: "3600",
     metadata: "",
   };
 }
@@ -340,10 +340,33 @@ export function App() {
       await action();
       setNotice(message);
       await refresh();
+      return true;
     } catch (e) {
       setError((e as Error).message);
+      return false;
     } finally {
       setBusy(false);
+    }
+  };
+
+  const removeStream = async (id: string, label: string) => {
+    if (!window.confirm(`Remove stream ${label}? Recordings and queued uploads are kept.`)) {
+      return;
+    }
+    const wasSelected = selectedId === id;
+    const removed = await runAction(() => api.remove(id), `Removed ${label}`);
+    if (removed) {
+      if (wasSelected) {
+        setPanelMode("closed");
+        setSelectedId(null);
+      }
+      setRadioResults((results) =>
+        results.map((station) =>
+          station.stationuuid === id || station.existing_stream_id === id
+            ? { ...station, already_added: false, existing_stream_id: undefined }
+            : station
+        )
+      );
     }
   };
 
@@ -468,8 +491,13 @@ export function App() {
       if (result.warnings && result.warnings.length > 0) {
         setWarning(result.warnings.join(" "));
       }
-      setPanelMode("closed");
-      setSelectedId(null);
+      setRadioResults((results) =>
+        results.map((item) =>
+          item.stationuuid === station.stationuuid
+            ? { ...item, already_added: true, existing_stream_id: result.id }
+            : item
+        )
+      );
       await refresh();
     } catch (e) {
       setError((e as Error).message);
@@ -589,7 +617,18 @@ export function App() {
                 <Spinner label="Loading streams..." />
               </div>
             ) : (
-              <table className="streamd-table">
+              <div className="streamd-table-wrap">
+              <table className="streamd-table streamd-streams-table">
+                <colgroup>
+                  <col style={{ width: "20%" }} />
+                  <col style={{ width: "15%" }} />
+                  <col style={{ width: "7%" }} />
+                  <col style={{ width: "9%" }} />
+                  <col style={{ width: "11%" }} />
+                  <col style={{ width: "7%" }} />
+                  <col style={{ width: "11%" }} />
+                  <col style={{ width: "20%" }} />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>Name</th>
@@ -608,19 +647,27 @@ export function App() {
                     return (
                       <tr key={stream.id} onClick={() => openDetail(stream)}>
                         <td>
-                          <div className="streamd-name">{stream.name}</div>
-                          <div className="streamd-muted streamd-small">{stream.url}</div>
+                          <div className="streamd-name streamd-truncate" title={stream.name}>{stream.name}</div>
+                          <div className="streamd-muted streamd-small streamd-truncate" title={stream.url}>{stream.url}</div>
                         </td>
-                        <td className="streamd-mono">{stream.id}</td>
+                        <td className="streamd-mono">
+                          <div className="streamd-truncate" title={stream.id}>{stream.id}</div>
+                        </td>
                         <td>{stream.type}</td>
-                        <td>{streamCountry(stream) || "-"}</td>
+                        <td>
+                          <div className="streamd-truncate" title={streamCountry(stream)}>
+                            {streamCountry(stream) || "-"}
+                          </div>
+                        </td>
                         <td>
                           <span className={`streamd-status ${stateTone(state)}`}>
                             <span className="streamd-dot" />
                             {stateLabel(state)}
                           </span>
                           {stream.error ? (
-                            <div className="streamd-small streamd-error-text">{stream.error}</div>
+                            <div className="streamd-small streamd-error-text streamd-truncate" title={stream.error}>
+                              {stream.error}
+                            </div>
                           ) : null}
                         </td>
                         <td>{stream.enabled ? "Yes" : "No"}</td>
@@ -658,12 +705,7 @@ export function App() {
                               subtle
                               danger
                               disabled={busy}
-                              onClick={() => {
-                                if (window.confirm(`Remove stream ${stream.id}? Recordings and queued uploads are kept.`)) {
-                                  if (selectedId === stream.id) closePanel();
-                                  runAction(() => api.remove(stream.id), `Removed ${stream.id}`);
-                                }
-                              }}
+                              onClick={() => removeStream(stream.id, stream.name || stream.id)}
                             />
                           </div>
                         </td>
@@ -679,6 +721,7 @@ export function App() {
                   ) : null}
                 </tbody>
               </table>
+              </div>
             )}
 
             <div className="streamd-pagination">
@@ -757,6 +800,12 @@ export function App() {
                     onClick: () => startStream(selected.id),
                   },
               { text: "Edit", onClick: () => openEdit(selected) },
+              {
+                text: "Delete",
+                danger: true,
+                disabled: busy,
+                onClick: () => removeStream(selected.id, selected.name || selected.id),
+              },
             ]}
           >
             <TabBar
@@ -893,20 +942,33 @@ export function App() {
                   <div className="streamd-discovery-results">
                     {radioResults.map((station) => (
                       <div className="streamd-discovery-row" key={station.stationuuid}>
-                        <div>
-                          <div className="streamd-name">{station.name}</div>
-                          <div className="streamd-muted streamd-small">
+                        <div className="streamd-discovery-copy">
+                          <div className="streamd-name streamd-truncate" title={station.name}>{station.name}</div>
+                          <div
+                            className="streamd-muted streamd-small streamd-truncate"
+                            title={[station.country, station.codec, station.bitrate ? `${station.bitrate} kbps` : "", station.hls ? "HLS" : ""]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          >
                             {[station.country, station.codec, station.bitrate ? `${station.bitrate} kbps` : "", station.hls ? "HLS" : ""]
                               .filter(Boolean)
                               .join(" · ")}
                           </div>
                         </div>
-                        <Button
-                          text={station.already_added ? "Added" : "Add"}
-                          primary
-                          disabled={busy || station.already_added}
-                          onClick={() => addRadio(station)}
-                        />
+                        <div className="streamd-discovery-actions">
+                          <Button
+                            text={station.already_added ? "Remove" : "Add"}
+                            primary={!station.already_added}
+                            subtle={station.already_added}
+                            danger={station.already_added}
+                            disabled={busy || (station.already_added && !station.existing_stream_id)}
+                            onClick={() =>
+                              station.already_added && station.existing_stream_id
+                                ? removeStream(station.existing_stream_id, station.name)
+                                : addRadio(station)
+                            }
+                          />
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -960,7 +1022,7 @@ export function App() {
                     onChange={(_event, value) =>
                       setForm({ ...form, chunk_seconds: (value || "").replace(/[^0-9]/g, "") })
                     }
-                    placeholder="300"
+                    placeholder="3600"
                   />
                 </label>
               </div>

@@ -31,6 +31,12 @@ func validTestConfig(t *testing.T, dir string) Config {
 	return cfg
 }
 
+func TestDefaultRecordingChunkSeconds(t *testing.T) {
+	if got := defaultConfig().Recording.ChunkSeconds; got != 3600 {
+		t.Fatalf("default chunk seconds = %d", got)
+	}
+}
+
 func TestLoadConfigExpandsEnvAndDefaults(t *testing.T) {
 	dir := t.TempDir()
 	envName := "STREAMD_TEST_ENDPOINT_CONFIG"

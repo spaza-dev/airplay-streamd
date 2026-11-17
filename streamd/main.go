@@ -28,7 +28,7 @@ var version = "dev"
 const (
 	defaultConfigPath = "/etc/streamd/config.yaml"
 
-	defaultChunkSeconds   = 300
+	defaultChunkSeconds   = 3600
 	defaultReconnectDelay = 10
 	defaultMaxReconnect   = 300
 	defaultConcurrency    = 4
