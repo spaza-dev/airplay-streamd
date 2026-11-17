@@ -34,6 +34,7 @@ type JobFile struct {
 	OriginalName string    `json:"original_name"`
 	StoredName   string    `json:"stored_name"`
 	Path         string    `json:"-"`
+	SourceID     string    `json:"source_id"`
 	SourceURL    string    `json:"source_url"`
 	SizeBytes    int64     `json:"size_bytes"`
 	ContentType  string    `json:"content_type"`
@@ -65,7 +66,9 @@ type Match struct {
 	JobID            int64     `json:"job_id"`
 	JobIndexID       int64     `json:"job_index_id"`
 	FileID           int64     `json:"file_id"`
+	FileRefID        string    `json:"file_ref_id,omitempty"`
 	FileName         string    `json:"file_name"`
+	FileURL          string    `json:"file_url,omitempty"`
 	QueryPath        string    `json:"query_path"`
 	ResourceID       string    `json:"resource_id"`
 	StreamID         string    `json:"stream_id"`

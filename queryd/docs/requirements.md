@@ -31,9 +31,10 @@ expose archive catalog browsing APIs.
 
 ### Input files
 
-`POST /api/jobs` accepts an array of absolute `http` or `https` file URLs. The worker
-downloads them asynchronously into the job workspace. The bundled web UI continues to use
-`POST /api/jobs/upload` with multipart file uploads.
+`POST /api/jobs` accepts an array of file objects. Each object requires an absolute
+`http` or `https` `url` and may include an optional client `id` and display `name`. The
+worker downloads them asynchronously into the job workspace. The bundled web UI continues
+to use `POST /api/jobs/upload` with multipart file uploads.
 
 Accepted extensions: `.mp3`, `.wav`, `.flac`, `.ogg`, `.opus`, `.m4a`, `.aac`, `.wma`,
 `.aiff`, `.aif`. For URL files the extension is derived from the URL path,
@@ -80,7 +81,9 @@ Each match contains:
 
 - job, index, file, stream, date and resource identifiers;
 - the matched archive `resource_id`;
+- the client-supplied `file_ref_id` when provided;
 - the original upload file name and stored query path;
+- the source `file_url` for URL-submitted files;
 - recording start time, absolute occurrence time, and reference offsets in milliseconds;
 - timeline offsets within the daily timeline;
 - Olaf match count and score when available.

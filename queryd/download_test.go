@@ -39,7 +39,7 @@ func addDownloadTestFile(t *testing.T, app *App, sourceURL string) (*Job, *JobFi
 	if err != nil {
 		t.Fatal(err)
 	}
-	file, err := app.db.AddJobFile(ctx, job.ID, "clip", "", "", "", sourceURL, 0)
+	file, err := app.db.AddJobFile(ctx, job.ID, "clip", "", "", "", "", sourceURL, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

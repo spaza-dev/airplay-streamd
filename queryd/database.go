@@ -312,13 +312,13 @@ func (d *DB) RecoverInterruptedJobs(ctx context.Context) (int, error) {
 	return int(n), nil
 }
 
-func (d *DB) AddJobFile(ctx context.Context, jobID int64, original, stored, path, contentType, sourceURL string, size int64) (*JobFile, error) {
+func (d *DB) AddJobFile(ctx context.Context, jobID int64, original, stored, path, contentType, sourceID, sourceURL string, size int64) (*JobFile, error) {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
 	now := utcNow()
 	res, err := d.db.ExecContext(ctx, `INSERT INTO job_files
-		(job_id, original_name, stored_name, path, source_url, size_bytes, content_type, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, jobID, original, stored, path, sourceURL, size, contentType, now)
+		(job_id, original_name, stored_name, path, source_id, source_url, size_bytes, content_type, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, jobID, original, stored, path, sourceID, sourceURL, size, contentType, now)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +326,7 @@ func (d *DB) AddJobFile(ctx context.Context, jobID int64, original, stored, path
 	_, _ = d.db.ExecContext(ctx, `UPDATE jobs SET total_files = (SELECT COUNT(*) FROM job_files WHERE job_id = ?),
 		updated_at = ? WHERE id = ?`, jobID, now, jobID)
 	return &JobFile{ID: id, JobID: jobID, OriginalName: original, StoredName: stored,
-		Path: path, SourceURL: sourceURL, SizeBytes: size, ContentType: contentType, CreatedAt: parseDBTime(now)}, nil
+		Path: path, SourceID: sourceID, SourceURL: sourceURL, SizeBytes: size, ContentType: contentType, CreatedAt: parseDBTime(now)}, nil
 }
 
 func (d *DB) SetJobFilePath(ctx context.Context, fileID int64, storedName, path string) error {
@@ -349,7 +349,7 @@ func scanFile(scanner interface{ Scan(...any) error }) (*JobFile, error) {
 	var f JobFile
 	var created string
 	if err := scanner.Scan(&f.ID, &f.JobID, &f.OriginalName, &f.StoredName, &f.Path,
-		&f.SourceURL, &f.SizeBytes, &f.ContentType, &created); err != nil {
+		&f.SourceID, &f.SourceURL, &f.SizeBytes, &f.ContentType, &created); err != nil {
 		return nil, err
 	}
 	f.CreatedAt = parseDBTime(created)
@@ -358,7 +358,7 @@ func scanFile(scanner interface{ Scan(...any) error }) (*JobFile, error) {
 
 func (d *DB) JobFiles(ctx context.Context, jobID int64) ([]JobFile, error) {
 	rows, err := d.db.QueryContext(ctx, `SELECT id, job_id, original_name, stored_name, path,
-		source_url, size_bytes, content_type, created_at FROM job_files WHERE job_id = ? ORDER BY id`, jobID)
+		source_id, source_url, size_bytes, content_type, created_at FROM job_files WHERE job_id = ? ORDER BY id`, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -482,12 +482,12 @@ func (d *DB) AddMatch(ctx context.Context, m *Match) error {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
 	_, err := d.db.ExecContext(ctx, `INSERT OR IGNORE INTO matches
-		(job_id, job_index_id, file_id, file_name, query_path, resource_id, stream_id, date,
-		 recording_start_time, occurrence_time, reference_start_ms, reference_stop_ms,
+		(job_id, job_index_id, file_id, file_ref_id, file_name, file_url, query_path, resource_id,
+		 stream_id, date, recording_start_time, occurrence_time, reference_start_ms, reference_stop_ms,
 		 match_count, score, timeline_start_ms, timeline_end_ms, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.JobID, m.JobIndexID, m.FileID, m.FileName, m.QueryPath, m.ResourceID, m.StreamID,
-		m.Date, m.RecordingStart.UTC().Format(time.RFC3339Nano),
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.JobID, m.JobIndexID, m.FileID, m.FileRefID, m.FileName, m.FileURL, m.QueryPath,
+		m.ResourceID, m.StreamID, m.Date, m.RecordingStart.UTC().Format(time.RFC3339Nano),
 		m.Occurrence.UTC().Format(time.RFC3339Nano), m.ReferenceStartMS, m.ReferenceStopMS,
 		m.MatchCount, m.Score, m.TimelineStartMS, m.TimelineEndMS, utcNow())
 	return err
@@ -496,10 +496,10 @@ func (d *DB) AddMatch(ctx context.Context, m *Match) error {
 func scanMatch(scanner interface{ Scan(...any) error }) (*Match, error) {
 	var m Match
 	var start, occurrence, created string
-	if err := scanner.Scan(&m.ID, &m.JobID, &m.JobIndexID, &m.FileID, &m.FileName,
-		&m.QueryPath, &m.ResourceID, &m.StreamID, &m.Date, &start, &occurrence,
-		&m.ReferenceStartMS, &m.ReferenceStopMS, &m.MatchCount, &m.Score,
-		&m.TimelineStartMS, &m.TimelineEndMS, &created); err != nil {
+	if err := scanner.Scan(&m.ID, &m.JobID, &m.JobIndexID, &m.FileID, &m.FileRefID,
+		&m.FileName, &m.FileURL, &m.QueryPath, &m.ResourceID, &m.StreamID, &m.Date,
+		&start, &occurrence, &m.ReferenceStartMS, &m.ReferenceStopMS, &m.MatchCount,
+		&m.Score, &m.TimelineStartMS, &m.TimelineEndMS, &created); err != nil {
 		return nil, err
 	}
 	m.RecordingStart = parseDBTime(start)
@@ -529,9 +529,10 @@ func (d *DB) Matches(ctx context.Context, jobID, fileID int64, streamID string, 
 	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM matches`+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	query := `SELECT id, job_id, job_index_id, file_id, file_name, query_path, resource_id,
-		stream_id, date, recording_start_time, occurrence_time, reference_start_ms,
-		reference_stop_ms, match_count, score, timeline_start_ms, timeline_end_ms, created_at
+	query := `SELECT id, job_id, job_index_id, file_id, file_ref_id, file_name, file_url,
+		query_path, resource_id, stream_id, date, recording_start_time, occurrence_time,
+		reference_start_ms, reference_stop_ms, match_count, score, timeline_start_ms,
+		timeline_end_ms, created_at
 		FROM matches` + where + ` ORDER BY occurrence_time, id LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
 	rows, err := d.db.QueryContext(ctx, query, args...)

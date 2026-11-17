@@ -105,8 +105,14 @@ func (a *App) handleReady(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
 }
 
+type jobFileInput struct {
+	ID   json.RawMessage `json:"id"`
+	Name string          `json:"name"`
+	URL  string          `json:"url"`
+}
+
 type createJobRequest struct {
-	Files       []string        `json:"files"`
+	Files       []jobFileInput  `json:"files"`
 	Scope       json.RawMessage `json:"scope"`
 	CallbackURL string          `json:"callback_url"`
 }
@@ -147,17 +153,27 @@ func (a *App) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type fileSource struct {
+		id   string
 		url  string
 		name string
 	}
 	sources := make([]fileSource, 0, len(req.Files))
-	for index, raw := range req.Files {
-		parsed, err := parseFileURL(raw)
+	for index, input := range req.Files {
+		parsed, err := parseFileURL(input.URL)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "files[%d]: %v", index, err)
 			return
 		}
-		sources = append(sources, fileSource{url: strings.TrimSpace(raw), name: fileNameFromURL(parsed, index)})
+		id, err := normalizeFileID(input.ID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "files[%d]: %v", index, err)
+			return
+		}
+		name := strings.TrimSpace(input.Name)
+		if name == "" {
+			name = fileNameFromURL(parsed, index)
+		}
+		sources = append(sources, fileSource{id: id, url: strings.TrimSpace(input.URL), name: name})
 	}
 	scopeBytes, _ := json.Marshal(scope)
 	job, err := a.db.CreateJob(r.Context(), string(scopeBytes), callbackURL, "api")
@@ -166,7 +182,7 @@ func (a *App) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, source := range sources {
-		if _, err := a.db.AddJobFile(r.Context(), job.ID, source.name, "", "", "", source.url, 0); err != nil {
+		if _, err := a.db.AddJobFile(r.Context(), job.ID, source.name, "", "", "", source.id, source.url, 0); err != nil {
 			a.failJobCreation(job.ID, err)
 			writeError(w, http.StatusInternalServerError, "store file metadata: %v", err)
 			return
@@ -242,7 +258,7 @@ func (a *App) handleCreateUploadJob(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, header := range files {
 		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(header.Filename)), ".")
-		record, err := a.db.AddJobFile(r.Context(), job.ID, header.Filename, "", "", header.Header.Get("Content-Type"), "", header.Size)
+		record, err := a.db.AddJobFile(r.Context(), job.ID, header.Filename, "", "", header.Header.Get("Content-Type"), "", "", header.Size)
 		if err != nil {
 			a.failJobCreation(job.ID, err)
 			writeError(w, http.StatusInternalServerError, "store file metadata: %v", err)
@@ -299,6 +315,25 @@ func parseFileURL(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("file URL must not contain credentials")
 	}
 	return parsed, nil
+}
+
+func normalizeFileID(raw json.RawMessage) (string, error) {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return "", nil
+	}
+	if strings.HasPrefix(value, `"`) {
+		var id string
+		if err := json.Unmarshal(raw, &id); err != nil {
+			return "", fmt.Errorf("invalid file id: %w", err)
+		}
+		return id, nil
+	}
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err != nil {
+		return "", fmt.Errorf("file id must be a string or number")
+	}
+	return number.String(), nil
 }
 
 func fileNameFromURL(parsed *url.URL, index int) string {

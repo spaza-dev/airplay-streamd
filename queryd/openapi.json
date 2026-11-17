@@ -71,7 +71,9 @@
         "properties": {
           "id": { "type": "integer" },
           "file_id": { "type": "integer" },
+          "file_ref_id": { "type": "string", "description": "Client-provided file id, when supplied" },
           "file_name": { "type": "string" },
+          "file_url": { "type": "string", "description": "Source URL for URL-submitted files" },
           "resource_id": { "type": "string" },
           "stream_id": { "type": "string" },
           "date": { "type": "string" },
@@ -118,8 +120,21 @@
                   "files": {
                     "type": "array",
                     "minItems": 1,
-                    "items": { "type": "string", "format": "uri" },
-                    "description": "Absolute http or https URLs of audio files"
+                    "items": {
+                      "type": "object",
+                      "required": ["url"],
+                      "properties": {
+                        "id": {
+                          "oneOf": [
+                            { "type": "string" },
+                            { "type": "integer" }
+                          ],
+                          "description": "Optional client identifier echoed in matches"
+                        },
+                        "name": { "type": "string", "description": "Optional display filename" },
+                        "url": { "type": "string", "format": "uri", "description": "Absolute http or https URL" }
+                      }
+                    }
                   },
                   "scope": { "$ref": "#/components/schemas/Scope" },
                   "callback_url": { "type": "string", "format": "uri" }

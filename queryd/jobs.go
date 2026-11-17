@@ -475,7 +475,8 @@ func (a *App) mapMatches(job *Job, idx *JobIndex, timeline *Timeline, matches []
 			endMS = startMS
 		}
 		out = append(out, Match{
-			JobID: job.ID, JobIndexID: idx.ID, FileID: file.ID, FileName: fileName,
+			JobID: job.ID, JobIndexID: idx.ID, FileID: file.ID, FileRefID: file.SourceID,
+			FileName: fileName, FileURL: file.SourceURL,
 			QueryPath: item.QueryPath, ResourceID: recording.ResourceID,
 			StreamID: idx.StreamID, Date: occurrence.In(loc).Format("2006-01-02"),
 			RecordingStart: recording.StartTime.UTC(), Occurrence: occurrence,

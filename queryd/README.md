@@ -20,8 +20,8 @@ are retained according to the configured retention period.
 
 ## Features
 
-- Submit up to 20 audio file URLs per job by default. Files are downloaded asynchronously
-  by the job worker.
+- Submit up to 20 audio file objects per job by default. Each file has a URL plus optional
+  client id and display name; files are downloaded asynchronously by the job worker.
 - Upload files through `/api/jobs/upload` for the bundled web UI.
 - Select streams by `all`, explicit IDs, or country.
 - Select a single date or a date range, with an optional daily time window in stream-local
@@ -43,7 +43,7 @@ are retained according to the configured retention period.
 ```text
 Client
   |
-  | POST /api/jobs (file URLs + scope)
+  | POST /api/jobs (file objects + scope)
   v
 queryd API ---> SQLite queue
   |
@@ -295,7 +295,7 @@ X-Admin-Token: <token>
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/jobs` | Create a query job from an array of file URLs (JSON). |
+| `POST` | `/api/jobs` | Create a query job from an array of file objects (JSON). |
 | `POST` | `/api/jobs/upload` | Create a query job using multipart form data. |
 | `GET` | `/api/jobs` | List jobs. Query: `status`, `limit`, `offset`. |
 | `GET` | `/api/jobs/{id}` | Job detail with files and indexes. |
@@ -323,13 +323,16 @@ settings, limits, and disk free/total bytes.
 
 `POST /api/jobs` accepts `application/json` with:
 
-- `files`: required array of absolute `http` or `https` URLs.
+- `files`: required array of objects. Each object requires `url` and may include an
+  optional client `id` and a display `name`. Plain URL strings are not accepted.
 - `scope`: required JSON object.
 - `callback_url`: optional absolute `http` or `https` URL.
 
 The job is queued immediately. The worker downloads each file before planning indexes, so
 invalid or oversized downloads fail the job asynchronously and follow the normal retry
-rules. File names are derived from the URL path, `Content-Disposition`, or `Content-Type`.
+rules. When `name` is omitted, the file name is derived from the URL path,
+`Content-Disposition`, or `Content-Type`. The supplied `id` is echoed in matches as
+`file_ref_id`, and the supplied `name` is echoed as `file_name`.
 Redirects are followed up to five hops. Unless `limits.allow_private_urls` is enabled,
 URLs resolving to private, loopback, or link-local addresses are rejected.
 
@@ -341,8 +344,16 @@ curl -sS \
   -H "Content-Type: application/json" \
   -d '{
     "files": [
-      "https://example.com/clips/clip-1.wav",
-      "https://example.com/clips/clip-2.mp3"
+      {
+        "id": "report-file-1",
+        "name": "clip-1.wav",
+        "url": "https://example.com/clips/clip-1.wav"
+      },
+      {
+        "id": 2,
+        "name": "clip-2.mp3",
+        "url": "https://example.com/clips/clip-2.mp3"
+      }
     ],
     "scope": {
       "streams": {"mode": "ids", "ids": ["radio-one"]},
@@ -484,7 +495,9 @@ Example match:
   "job_id": 42,
   "job_index_id": 7,
   "file_id": 3,
+  "file_ref_id": "report-file-1",
   "file_name": "clip-1.wav",
+  "file_url": "https://example.com/clips/clip-1.wav",
   "query_path": "/var/lib/queryd/jobs/42/uploads/3.wav",
   "resource_id": "radio-one-20261115-180000",
   "stream_id": "radio-one",
@@ -503,6 +516,9 @@ Example match:
 
 Field meanings:
 
+- `file_ref_id`: optional client-supplied file id from the job request.
+- `file_name`: client-supplied display name, or the derived filename.
+- `file_url`: source URL for URL-submitted files.
 - `resource_id`: archive recording identifier from the timeline.
 - `occurrence_time`: absolute UTC start of the matched audio in the broadcast.
 - `reference_start_ms` / `reference_stop_ms`: match offsets from the recording start.

@@ -804,11 +804,12 @@ export function App() {
               <div className="q-table-wrap">
                 <table className="q-table">
                   <thead>
-                    <tr><th>File</th><th>Source</th><th>Size</th><th>Type</th></tr>
+                    <tr><th>ID</th><th>File</th><th>Source</th><th>Size</th><th>Type</th></tr>
                   </thead>
                   <tbody>
                     {(detail ? detail.files : []).map((file) => (
                       <tr key={file.id}>
+                        <td>{file.source_id || "-"}</td>
                         <td>{file.original_name}</td>
                         <td>{file.source_url ? <a href={file.source_url} target="_blank" rel="noreferrer">{file.source_url}</a> : "upload"}</td>
                         <td>{formatBytes(file.size_bytes)}</td>
@@ -852,12 +853,13 @@ export function App() {
               <div className="q-table-wrap">
                 <table className="q-table">
                   <thead>
-                    <tr><th>File</th><th>Stream</th><th>Date</th><th>Occurrence</th><th>Resource</th><th>Ref start</th><th>Ref stop</th><th>Count</th><th>Score</th></tr>
+                    <tr><th>File</th><th>Ref</th><th>Stream</th><th>Date</th><th>Occurrence</th><th>Resource</th><th>Ref start</th><th>Ref stop</th><th>Count</th><th>Score</th></tr>
                   </thead>
                   <tbody>
                     {matches.map((match) => (
                       <tr key={match.id}>
                         <td>{match.file_name}</td>
+                        <td>{match.file_ref_id || "-"}</td>
                         <td>{match.stream_id}</td>
                         <td>{match.date}</td>
                         <td>{formatTime(match.occurrence_time)}</td>

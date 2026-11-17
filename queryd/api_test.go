@@ -9,15 +9,22 @@ import (
 	"testing"
 )
 
-func TestHandleCreateJobAcceptsFileURLs(t *testing.T) {
+func TestHandleCreateJobAcceptsFileObjects(t *testing.T) {
 	app := newDownloadTestApp(t, true)
 	app.storage = &StorageClient{}
 	app.jobs = NewJobManager(app)
 
 	body := `{
 		"files": [
-			"https://example.com/clips/clip-1.wav",
-			"https://example.com/clips/clip-2.mp3?token=abc"
+			{
+				"id": "report-file-1",
+				"name": "Bien - I'll Be Okay (Official Audio) [KEDm1bHpIDM].mp3",
+				"url": "https://example.com/api/files?key=reference-files%2Freport-uploads%2Fclip-1.mp3"
+			},
+			{
+				"id": 123,
+				"url": "https://example.com/clips/clip-2.mp3?token=abc"
+			}
 		],
 		"scope": {"streams": {"mode": "all"}, "dates": {"mode": "date", "date": "2026-01-02"}},
 		"callback_url": "https://example.com/hooks/queryd"
@@ -45,14 +52,38 @@ func TestHandleCreateJobAcceptsFileURLs(t *testing.T) {
 	if len(files) != 2 {
 		t.Fatalf("files = %d", len(files))
 	}
-	if files[0].OriginalName != "clip-1.wav" || files[0].SourceURL != "https://example.com/clips/clip-1.wav" {
-		t.Fatalf("unexpected first file: %+v", files[0])
+	if files[0].SourceID != "report-file-1" {
+		t.Fatalf("source id = %q", files[0].SourceID)
 	}
-	if files[1].OriginalName != "clip-2.mp3" || files[1].SourceURL != "https://example.com/clips/clip-2.mp3?token=abc" {
+	if files[0].OriginalName != "Bien - I'll Be Okay (Official Audio) [KEDm1bHpIDM].mp3" {
+		t.Fatalf("original name = %q", files[0].OriginalName)
+	}
+	if files[0].SourceURL != "https://example.com/api/files?key=reference-files%2Freport-uploads%2Fclip-1.mp3" {
+		t.Fatalf("source url = %q", files[0].SourceURL)
+	}
+	if files[1].SourceID != "123" || files[1].OriginalName != "clip-2.mp3" {
 		t.Fatalf("unexpected second file: %+v", files[1])
 	}
 	if files[0].Path != "" || files[1].Path != "" {
 		t.Fatalf("URL files should not have local paths before download: %+v", files)
+	}
+}
+
+func TestHandleCreateJobRejectsPlainStringFiles(t *testing.T) {
+	app := newDownloadTestApp(t, true)
+	app.storage = &StorageClient{}
+	app.jobs = NewJobManager(app)
+
+	body := `{
+		"files": ["https://example.com/clips/clip-1.wav"],
+		"scope": {"streams": {"mode": "all"}, "dates": {"mode": "date", "date": "2026-01-02"}}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	app.handleCreateJob(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -76,7 +107,25 @@ func TestHandleCreateJobRejectsInvalidFileURL(t *testing.T) {
 	app.jobs = NewJobManager(app)
 
 	body := `{
-		"files": ["ftp://example.com/clip.wav"],
+		"files": [{"url": "ftp://example.com/clip.wav"}],
+		"scope": {"streams": {"mode": "all"}, "dates": {"mode": "date", "date": "2026-01-02"}}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/jobs", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	app.handleCreateJob(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleCreateJobRejectsInvalidFileID(t *testing.T) {
+	app := newDownloadTestApp(t, true)
+	app.storage = &StorageClient{}
+	app.jobs = NewJobManager(app)
+
+	body := `{
+		"files": [{"id": {"nested": true}, "url": "https://example.com/clip.wav"}],
 		"scope": {"streams": {"mode": "all"}, "dates": {"mode": "date", "date": "2026-01-02"}}
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/api/jobs", bytes.NewBufferString(body))

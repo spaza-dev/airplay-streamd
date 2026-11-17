@@ -91,7 +91,7 @@ Callback errors are logged but do not fail jobs.
 
 `api.go` provides:
 
-- `POST /api/jobs` (JSON: `files` URL array, `scope`, optional `callback_url`)
+- `POST /api/jobs` (JSON: `files` object array with `id?`, `name?`, `url`, `scope`, optional `callback_url`)
 - `POST /api/jobs/upload` (multipart: `files`, `scope`, optional `callback_url`)
 - `GET /api/jobs`
 - `GET /api/jobs/{id}`

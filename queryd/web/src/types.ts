@@ -26,6 +26,7 @@ export interface JobFile {
   job_id: number;
   original_name: string;
   stored_name: string;
+  source_id: string;
   source_url: string;
   size_bytes: number;
   content_type: string;
@@ -50,7 +51,9 @@ export interface Match {
   job_id: number;
   job_index_id: number;
   file_id: number;
+  file_ref_id?: string;
   file_name: string;
+  file_url?: string;
   query_path: string;
   resource_id: string;
   stream_id: string;

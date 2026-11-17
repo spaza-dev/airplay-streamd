@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -21,7 +22,10 @@ func TestMapMatches(t *testing.T) {
 		}},
 	}
 	idx := &JobIndex{ID: 2, StreamID: "radio", Date: "2026-01-02", Timezone: "UTC"}
-	files := []JobFile{{ID: 7, OriginalName: "clip.mp3", StoredName: "7.mp3", Path: "/tmp/7.mp3"}}
+	files := []JobFile{{
+		ID: 7, SourceID: "report-file-7", OriginalName: "clip.mp3",
+		SourceURL: "https://example.com/clip.mp3", StoredName: "7.mp3", Path: "/tmp/7.mp3",
+	}}
 	matches := []OlafMatch{{QueryPath: "7.mp3", Path: "olaf-1", ReferenceStart: 12.5, ReferenceStop: 22.5, MatchCount: 9}}
 	out := app.mapMatches(job, idx, timeline, matches, files, scope)
 	if len(out) != 1 {
@@ -30,6 +34,9 @@ func TestMapMatches(t *testing.T) {
 	match := out[0]
 	if match.FileID != 7 || match.ResourceID != "res-1" {
 		t.Fatalf("unexpected match: %+v", match)
+	}
+	if match.FileRefID != "report-file-7" || match.FileURL != "https://example.com/clip.mp3" {
+		t.Fatalf("missing file reference fields: %+v", match)
 	}
 	if match.ReferenceStartMS != 12500 || match.ReferenceStopMS != 22500 {
 		t.Fatalf("unexpected offsets: %+v", match)
@@ -110,5 +117,45 @@ func TestDedupeOverlappingMatchesAllowsTouchingIntervals(t *testing.T) {
 	out := dedupeOverlappingMatches(matches)
 	if len(out) != 2 {
 		t.Fatalf("matches = %d, want 2", len(out))
+	}
+}
+
+func TestMatchPersistsFileReferenceFields(t *testing.T) {
+	app := newDownloadTestApp(t, true)
+	ctx := context.Background()
+	job, err := app.db.CreateJob(ctx, `{"streams":{"mode":"all"},"dates":{"mode":"date","date":"2026-01-02"}}`, "", "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := app.db.InsertIndex(ctx, &JobIndex{
+		JobID: job.ID, StreamID: "radio", Date: "2026-01-02", BuildID: "b1",
+		Status: "done",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := app.db.AddJobFile(ctx, job.ID, "clip.mp3", "1.mp3", "/tmp/1.mp3", "audio/mpeg", "report-file-1", "https://example.com/clip.mp3", 123)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	match := &Match{
+		JobID: job.ID, JobIndexID: idx.ID, FileID: file.ID, FileRefID: file.SourceID,
+		FileName: file.OriginalName, FileURL: file.SourceURL, QueryPath: "1.mp3",
+		ResourceID: "res-1", StreamID: "radio", Date: "2026-01-02",
+		RecordingStart: now, Occurrence: now, ReferenceStartMS: 1, ReferenceStopMS: 2,
+	}
+	if err := app.db.AddMatch(ctx, match); err != nil {
+		t.Fatal(err)
+	}
+	matches, total, err := app.db.Matches(ctx, job.ID, 0, "", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(matches) != 1 {
+		t.Fatalf("matches = %d, total = %d", len(matches), total)
+	}
+	if matches[0].FileRefID != "report-file-1" || matches[0].FileURL != "https://example.com/clip.mp3" {
+		t.Fatalf("missing file reference fields: %+v", matches[0])
 	}
 }
