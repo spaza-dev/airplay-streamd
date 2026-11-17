@@ -26,6 +26,7 @@ export interface JobFile {
   job_id: number;
   original_name: string;
   stored_name: string;
+  source_url: string;
   size_bytes: number;
   content_type: string;
   created_at: string;

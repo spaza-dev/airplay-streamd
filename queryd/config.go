@@ -42,12 +42,13 @@ type DatabaseConfig struct {
 }
 
 type LimitsConfig struct {
-	MaxUploadFiles   int `yaml:"max_upload_files" json:"max_upload_files"`
-	MaxUploadMB      int `yaml:"max_upload_mb" json:"max_upload_mb"`
-	MaxTotalUploadMB int `yaml:"max_total_upload_mb" json:"max_total_upload_mb"`
-	MaxIndexesPerJob int `yaml:"max_indexes_per_job" json:"max_indexes_per_job"`
-	MaxDownloadGB    int `yaml:"max_download_gb" json:"max_download_gb"`
-	MinFreeDiskGB    int `yaml:"min_free_disk_gb" json:"min_free_disk_gb"`
+	MaxUploadFiles   int  `yaml:"max_upload_files" json:"max_upload_files"`
+	MaxUploadMB      int  `yaml:"max_upload_mb" json:"max_upload_mb"`
+	MaxTotalUploadMB int  `yaml:"max_total_upload_mb" json:"max_total_upload_mb"`
+	MaxIndexesPerJob int  `yaml:"max_indexes_per_job" json:"max_indexes_per_job"`
+	MaxDownloadGB    int  `yaml:"max_download_gb" json:"max_download_gb"`
+	MinFreeDiskGB    int  `yaml:"min_free_disk_gb" json:"min_free_disk_gb"`
+	AllowPrivateURLs bool `yaml:"allow_private_urls" json:"allow_private_urls"`
 }
 
 type WorkersConfig struct {

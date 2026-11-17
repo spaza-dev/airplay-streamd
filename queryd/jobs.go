@@ -202,13 +202,21 @@ func (m *JobManager) execute(ctx context.Context, job *Job) error {
 		return err
 	}
 	if len(files) == 0 {
-		return permanent(fmt.Errorf("job has no uploaded files"))
+		return permanent(fmt.Errorf("job has no files"))
+	}
+	if free, _ := diskFree(workspace); free < int64(a.cfg.Limits.MinFreeDiskGB)*1024*1024*1024 && free != 0 {
+		return fmt.Errorf("free disk space %d bytes is below the configured minimum", free)
+	}
+	files, err = a.downloadJobFiles(ctx, job.ID, files)
+	if err != nil {
+		return err
 	}
 	for _, file := range files {
 		if file.Path == "" || !fileExists(file.Path) {
-			return permanent(fmt.Errorf("uploaded file %q is missing", file.OriginalName))
+			return permanent(fmt.Errorf("job file %q is missing", file.OriginalName))
 		}
 	}
+	_ = a.db.SetJobStage(ctx, job.ID, "planning", "planning", 0.1)
 
 	if _, err := a.planIndexes(ctx, job); err != nil {
 		return err

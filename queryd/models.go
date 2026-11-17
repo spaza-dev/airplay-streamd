@@ -34,6 +34,7 @@ type JobFile struct {
 	OriginalName string    `json:"original_name"`
 	StoredName   string    `json:"stored_name"`
 	Path         string    `json:"-"`
+	SourceURL    string    `json:"source_url"`
 	SizeBytes    int64     `json:"size_bytes"`
 	ContentType  string    `json:"content_type"`
 	CreatedAt    time.Time `json:"created_at"`

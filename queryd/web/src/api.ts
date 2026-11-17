@@ -52,7 +52,7 @@ export const api = {
   },
   job: (id: number) => request<JobDetail>(`/api/jobs/${id}`),
   createJob: (form: FormData) =>
-    request<{ job: Job }>("/api/jobs", { method: "POST", body: form }),
+    request<{ job: Job }>("/api/jobs/upload", { method: "POST", body: form }),
   pauseJob: (id: number) => request<{ job: Job }>(`/api/jobs/${id}/pause`, { method: "POST" }),
   resumeJob: (id: number) => request<{ job: Job }>(`/api/jobs/${id}/resume`, { method: "POST" }),
   cancelJob: (id: number) => request<{ job: Job }>(`/api/jobs/${id}/cancel`, { method: "POST" }),

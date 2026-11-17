@@ -312,13 +312,13 @@ func (d *DB) RecoverInterruptedJobs(ctx context.Context) (int, error) {
 	return int(n), nil
 }
 
-func (d *DB) AddJobFile(ctx context.Context, jobID int64, original, stored, path, contentType string, size int64) (*JobFile, error) {
+func (d *DB) AddJobFile(ctx context.Context, jobID int64, original, stored, path, contentType, sourceURL string, size int64) (*JobFile, error) {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
 	now := utcNow()
 	res, err := d.db.ExecContext(ctx, `INSERT INTO job_files
-		(job_id, original_name, stored_name, path, size_bytes, content_type, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, jobID, original, stored, path, size, contentType, now)
+		(job_id, original_name, stored_name, path, source_url, size_bytes, content_type, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, jobID, original, stored, path, sourceURL, size, contentType, now)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +326,7 @@ func (d *DB) AddJobFile(ctx context.Context, jobID int64, original, stored, path
 	_, _ = d.db.ExecContext(ctx, `UPDATE jobs SET total_files = (SELECT COUNT(*) FROM job_files WHERE job_id = ?),
 		updated_at = ? WHERE id = ?`, jobID, now, jobID)
 	return &JobFile{ID: id, JobID: jobID, OriginalName: original, StoredName: stored,
-		Path: path, SizeBytes: size, ContentType: contentType, CreatedAt: parseDBTime(now)}, nil
+		Path: path, SourceURL: sourceURL, SizeBytes: size, ContentType: contentType, CreatedAt: parseDBTime(now)}, nil
 }
 
 func (d *DB) SetJobFilePath(ctx context.Context, fileID int64, storedName, path string) error {
@@ -337,11 +337,19 @@ func (d *DB) SetJobFilePath(ctx context.Context, fileID int64, storedName, path 
 	return err
 }
 
+func (d *DB) SetJobFileDownloaded(ctx context.Context, fileID int64, storedName, path, contentType string, size int64) error {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+	_, err := d.db.ExecContext(ctx, `UPDATE job_files SET stored_name = ?, path = ?, content_type = ?, size_bytes = ? WHERE id = ?`,
+		storedName, path, contentType, size, fileID)
+	return err
+}
+
 func scanFile(scanner interface{ Scan(...any) error }) (*JobFile, error) {
 	var f JobFile
 	var created string
 	if err := scanner.Scan(&f.ID, &f.JobID, &f.OriginalName, &f.StoredName, &f.Path,
-		&f.SizeBytes, &f.ContentType, &created); err != nil {
+		&f.SourceURL, &f.SizeBytes, &f.ContentType, &created); err != nil {
 		return nil, err
 	}
 	f.CreatedAt = parseDBTime(created)
@@ -350,7 +358,7 @@ func scanFile(scanner interface{ Scan(...any) error }) (*JobFile, error) {
 
 func (d *DB) JobFiles(ctx context.Context, jobID int64) ([]JobFile, error) {
 	rows, err := d.db.QueryContext(ctx, `SELECT id, job_id, original_name, stored_name, path,
-		size_bytes, content_type, created_at FROM job_files WHERE job_id = ? ORDER BY id`, jobID)
+		source_url, size_bytes, content_type, created_at FROM job_files WHERE job_id = ? ORDER BY id`, jobID)
 	if err != nil {
 		return nil, err
 	}

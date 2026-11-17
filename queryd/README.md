@@ -1,10 +1,11 @@
 # queryd
 
 `queryd` is an asynchronous, batch query service for the broadcast archive produced by
-`streamd` and `indexer`. Clients upload one or more audio clips together with a scope of
-streams and dates. `queryd` discovers the matching daily Olaf indexes in S3, downloads
-them, runs `olaf query`, maps the results back to archive recordings, and reports matches
-through the API and optional progressive callbacks.
+`streamd` and `indexer`. Clients submit one or more audio files as URLs together with a
+scope of streams and dates. `queryd` downloads the files, discovers the matching daily Olaf
+indexes in S3, downloads them, runs `olaf query`, maps the results back to archive
+recordings, and reports matches through the API and optional progressive callbacks. The
+bundled web UI keeps using multipart uploads through a separate endpoint.
 
 It is designed for one host and one SQLite database. Heavy temporary data is removed when
 a job reaches a terminal state; job metadata, matches, logs, and callback delivery history
@@ -19,7 +20,9 @@ are retained according to the configured retention period.
 
 ## Features
 
-- Upload up to 20 audio files per job by default.
+- Submit up to 20 audio file URLs per job by default. Files are downloaded asynchronously
+  by the job worker.
+- Upload files through `/api/jobs/upload` for the bundled web UI.
 - Select streams by `all`, explicit IDs, or country.
 - Select a single date or a date range, with an optional daily time window in stream-local
   time.
@@ -40,9 +43,12 @@ are retained according to the configured retention period.
 ```text
 Client
   |
-  | POST /api/jobs (files + scope)
+  | POST /api/jobs (file URLs + scope)
   v
 queryd API ---> SQLite queue
+  |
+  v
+File downloader ---> local job workspace (audio files)
   |
   v
 Planner ---> S3 archive indexes/YYYY/MM/DD/meta.json
@@ -289,7 +295,8 @@ X-Admin-Token: <token>
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/jobs` | Create a query job using multipart form data. |
+| `POST` | `/api/jobs` | Create a query job from an array of file URLs (JSON). |
+| `POST` | `/api/jobs/upload` | Create a query job using multipart form data. |
 | `GET` | `/api/jobs` | List jobs. Query: `status`, `limit`, `offset`. |
 | `GET` | `/api/jobs/{id}` | Job detail with files and indexes. |
 | `GET` | `/api/jobs/{id}/matches` | Matches. Query: `file_id`, `stream_id`, `limit`, `offset`. |
@@ -314,19 +321,51 @@ settings, limits, and disk free/total bytes.
 
 ### Create a job
 
-`POST /api/jobs` is `multipart/form-data` with:
+`POST /api/jobs` accepts `application/json` with:
+
+- `files`: required array of absolute `http` or `https` URLs.
+- `scope`: required JSON object.
+- `callback_url`: optional absolute `http` or `https` URL.
+
+The job is queued immediately. The worker downloads each file before planning indexes, so
+invalid or oversized downloads fail the job asynchronously and follow the normal retry
+rules. File names are derived from the URL path, `Content-Disposition`, or `Content-Type`.
+Redirects are followed up to five hops. Unless `limits.allow_private_urls` is enabled,
+URLs resolving to private, loopback, or link-local addresses are rejected.
+
+Example:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $QUERYD_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "files": [
+      "https://example.com/clips/clip-1.wav",
+      "https://example.com/clips/clip-2.mp3"
+    ],
+    "scope": {
+      "streams": {"mode": "ids", "ids": ["radio-one"]},
+      "dates": {"mode": "date", "date": "2026-11-15"},
+      "daily_time_window": {"start": "18:00", "end": "22:00"}
+    },
+    "callback_url": "https://example.com/hooks/queryd"
+  }' \
+  http://127.0.0.1:8790/api/jobs
+```
+
+### Upload a job from the web UI
+
+`POST /api/jobs/upload` is `multipart/form-data` with:
 
 - `files`: one or more audio files. `files[]` is also accepted.
 - `scope`: JSON object.
 - `callback_url`: optional absolute `http` or `https` URL.
 
-Example:
-
 ```bash
 SCOPE='{
   "streams": {"mode": "ids", "ids": ["radio-one"]},
-  "dates": {"mode": "date", "date": "2026-11-15"},
-  "daily_time_window": {"start": "18:00", "end": "22:00"}
+  "dates": {"mode": "date", "date": "2026-11-15"}
 }'
 
 curl -sS \
@@ -335,7 +374,7 @@ curl -sS \
   -F "files=@clip-2.mp3" \
   -F "scope=$SCOPE" \
   -F "callback_url=https://example.com/hooks/queryd" \
-  http://127.0.0.1:8790/api/jobs
+  http://127.0.0.1:8790/api/jobs/upload
 ```
 
 Response, HTTP 201:
@@ -360,8 +399,9 @@ Response, HTTP 201:
 }
 ```
 
-Accepted upload extensions: `.mp3`, `.wav`, `.flac`, `.ogg`, `.opus`, `.m4a`, `.aac`,
-`.wma`, `.aiff`, and `.aif`. Validation is by extension, not by content type. Files are
+Accepted extensions: `.mp3`, `.wav`, `.flac`, `.ogg`, `.opus`, `.m4a`, `.aac`, `.wma`,
+`.aiff`, and `.aif`. Multipart uploads are validated by filename extension. URL downloads
+derive the extension from the URL path, `Content-Disposition`, or `Content-Type`. Files are
 stored under the job workspace as `<file_id>.<extension>`.
 
 ### Scope options
@@ -589,6 +629,7 @@ limits:
   max_indexes_per_job: 500
   max_download_gb: 50
   min_free_disk_gb: 10
+  allow_private_urls: false
 
 workers:
   max_active_jobs: 1
@@ -635,6 +676,7 @@ logging:
 | | `max_indexes_per_job` | Maximum indexes a scope may resolve to. |
 | | `max_download_gb` | Maximum total download size per job. |
 | | `min_free_disk_gb` | Refuse work when free workspace disk is below this. |
+| | `allow_private_urls` | Allow file URLs that resolve to private/loopback/link-local addresses. Default `false`. |
 | `workers` | `max_active_jobs` | Concurrent jobs. Keep at 1 for predictable Olaf CPU use. |
 | | `downloads_per_job` | Parallel index downloads within one job. |
 | | `olaf_threads` | Passed to `olaf query --threads`. |

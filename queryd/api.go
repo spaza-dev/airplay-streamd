@@ -48,6 +48,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /docs", a.handleDocs)
 
 	mux.HandleFunc("POST /api/jobs", a.handleCreateJob)
+	mux.HandleFunc("POST /api/jobs/upload", a.handleCreateUploadJob)
 	mux.HandleFunc("GET /api/jobs", a.handleListJobs)
 	mux.HandleFunc("GET /api/jobs/logs", a.handleAllLogs)
 	mux.HandleFunc("GET /api/jobs/{id}", a.handleGetJob)
@@ -104,7 +105,79 @@ func (a *App) handleReady(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
 }
 
+type createJobRequest struct {
+	Files       []string        `json:"files"`
+	Scope       json.RawMessage `json:"scope"`
+	CallbackURL string          `json:"callback_url"`
+}
+
 func (a *App) handleCreateJob(w http.ResponseWriter, r *http.Request) {
+	if a.storage == nil {
+		writeError(w, http.StatusServiceUnavailable, "S3 storage is not configured")
+		return
+	}
+	if strings.HasPrefix(strings.ToLower(r.Header.Get("Content-Type")), "multipart/form-data") {
+		writeError(w, http.StatusUnsupportedMediaType, "multipart is not supported on this endpoint; use /api/jobs/upload")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var req createJobRequest
+	if err := decoder.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON request: %v", err)
+		return
+	}
+	if len(req.Files) == 0 {
+		writeError(w, http.StatusBadRequest, "at least one file URL is required")
+		return
+	}
+	if len(req.Files) > a.cfg.Limits.MaxUploadFiles {
+		writeError(w, http.StatusBadRequest, "too many files (limit %d)", a.cfg.Limits.MaxUploadFiles)
+		return
+	}
+	scope, err := ParseScope(string(req.Scope))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	callbackURL, err := validateCallbackURL(req.CallbackURL)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
+	}
+	type fileSource struct {
+		url  string
+		name string
+	}
+	sources := make([]fileSource, 0, len(req.Files))
+	for index, raw := range req.Files {
+		parsed, err := parseFileURL(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "files[%d]: %v", index, err)
+			return
+		}
+		sources = append(sources, fileSource{url: strings.TrimSpace(raw), name: fileNameFromURL(parsed, index)})
+	}
+	scopeBytes, _ := json.Marshal(scope)
+	job, err := a.db.CreateJob(r.Context(), string(scopeBytes), callbackURL, "api")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "create job: %v", err)
+		return
+	}
+	for _, source := range sources {
+		if _, err := a.db.AddJobFile(r.Context(), job.ID, source.name, "", "", "", source.url, 0); err != nil {
+			a.failJobCreation(job.ID, err)
+			writeError(w, http.StatusInternalServerError, "store file metadata: %v", err)
+			return
+		}
+	}
+	job, _ = a.db.GetJob(r.Context(), job.ID)
+	a.jobs.Kick()
+	writeJSON(w, http.StatusCreated, map[string]any{"job": job})
+}
+
+func (a *App) handleCreateUploadJob(w http.ResponseWriter, r *http.Request) {
 	if a.storage == nil {
 		writeError(w, http.StatusServiceUnavailable, "S3 storage is not configured")
 		return
@@ -149,13 +222,10 @@ func (a *App) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "%v", err)
 		return
 	}
-	callbackURL := strings.TrimSpace(r.FormValue("callback_url"))
-	if callbackURL != "" {
-		parsed, err := url.Parse(callbackURL)
-		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-			writeError(w, http.StatusBadRequest, "callback_url must be an absolute http or https URL")
-			return
-		}
+	callbackURL, err := validateCallbackURL(r.FormValue("callback_url"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "%v", err)
+		return
 	}
 	scopeBytes, _ := json.Marshal(scope)
 	job, err := a.db.CreateJob(r.Context(), string(scopeBytes), callbackURL, "api")
@@ -172,7 +242,7 @@ func (a *App) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, header := range files {
 		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(header.Filename)), ".")
-		record, err := a.db.AddJobFile(r.Context(), job.ID, header.Filename, "", "", header.Header.Get("Content-Type"), header.Size)
+		record, err := a.db.AddJobFile(r.Context(), job.ID, header.Filename, "", "", header.Header.Get("Content-Type"), "", header.Size)
 		if err != nil {
 			a.failJobCreation(job.ID, err)
 			writeError(w, http.StatusInternalServerError, "store file metadata: %v", err)
@@ -196,6 +266,47 @@ func (a *App) handleCreateJob(w http.ResponseWriter, r *http.Request) {
 	job, _ = a.db.GetJob(r.Context(), job.ID)
 	a.jobs.Kick()
 	writeJSON(w, http.StatusCreated, map[string]any{"job": job})
+}
+
+func validateCallbackURL(raw string) (string, error) {
+	callbackURL := strings.TrimSpace(raw)
+	if callbackURL == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(callbackURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", fmt.Errorf("callback_url must be an absolute http or https URL")
+	}
+	return callbackURL, nil
+}
+
+func parseFileURL(raw string) (*url.URL, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, fmt.Errorf("file URL must not be empty")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return nil, fmt.Errorf("invalid file URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("file URL must use http or https")
+	}
+	if parsed.Host == "" {
+		return nil, fmt.Errorf("file URL must be absolute")
+	}
+	if parsed.User != nil {
+		return nil, fmt.Errorf("file URL must not contain credentials")
+	}
+	return parsed, nil
+}
+
+func fileNameFromURL(parsed *url.URL, index int) string {
+	name, err := url.PathUnescape(filepath.Base(parsed.Path))
+	if err != nil || name == "" || name == "." || name == "/" {
+		return fmt.Sprintf("download-%d", index+1)
+	}
+	return name
 }
 
 func (a *App) failJobCreation(jobID int64, err error) {
@@ -405,6 +516,7 @@ func (a *App) handleStats(w http.ResponseWriter, r *http.Request) {
 			"max_upload_mb":       a.cfg.Limits.MaxUploadMB,
 			"max_indexes_per_job": a.cfg.Limits.MaxIndexesPerJob,
 			"max_download_gb":     a.cfg.Limits.MaxDownloadGB,
+			"allow_private_urls":  a.cfg.Limits.AllowPrivateURLs,
 		},
 		"disk": map[string]any{"free_bytes": free, "total_bytes": total},
 	})

@@ -105,7 +105,35 @@
         "responses": { "200": { "description": "OK" } }
       },
       "post": {
-        "summary": "Create a query job",
+        "summary": "Create a query job from file URLs",
+        "description": "The files are downloaded asynchronously by the job worker. Only application/json is accepted; use /api/jobs/upload for multipart uploads.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["files", "scope"],
+                "properties": {
+                  "files": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string", "format": "uri" },
+                    "description": "Absolute http or https URLs of audio files"
+                  },
+                  "scope": { "$ref": "#/components/schemas/Scope" },
+                  "callback_url": { "type": "string", "format": "uri" }
+                }
+              }
+            }
+          }
+        },
+        "responses": { "201": { "description": "Created" }, "400": { "description": "Invalid request" }, "415": { "description": "Multipart is not supported" }, "503": { "description": "Storage unavailable" } }
+      }
+    },
+    "/api/jobs/upload": {
+      "post": {
+        "summary": "Create a query job with uploaded files",
         "requestBody": {
           "required": true,
           "content": {

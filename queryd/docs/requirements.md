@@ -3,17 +3,19 @@
 ## Purpose
 
 `queryd` is an asynchronous, batch query service for the broadcast archive produced by
-`streamd` and `indexer`. A client uploads one or more audio clips together with a scope
-(streams and dates). The service resolves the matching daily Olaf indexes, downloads them,
-runs `olaf query`, reports matches progressively through a callback, and removes the heavy
-temporary artifacts when the job ends.
+`streamd` and `indexer`. A client submits one or more audio file URLs, or uploads clips
+through the web UI, together with a scope (streams and dates). The service downloads the
+files, resolves the matching daily Olaf indexes, downloads them, runs `olaf query`, reports
+matches progressively through a callback, and removes the heavy temporary artifacts when
+the job ends.
 
 The service exposes only job-oriented APIs, statistics, and health checks. It does not
 expose archive catalog browsing APIs.
 
 ## Scope of v1
 
-- Accept up to `limits.max_upload_files` audio files per job.
+- Accept up to `limits.max_upload_files` audio files per job, either as URLs or through the
+  web UI multipart upload endpoint.
 - Accept a JSON scope selecting streams and dates, with an optional daily time window.
 - Run asynchronously. Jobs survive restarts and can be paused, resumed, or cancelled.
 - Use S3 credentials from the environment; no storage administration API.
@@ -27,14 +29,21 @@ expose archive catalog browsing APIs.
 
 ## Input
 
-### Uploaded files
+### Input files
+
+`POST /api/jobs` accepts an array of absolute `http` or `https` file URLs. The worker
+downloads them asynchronously into the job workspace. The bundled web UI continues to use
+`POST /api/jobs/upload` with multipart file uploads.
 
 Accepted extensions: `.mp3`, `.wav`, `.flac`, `.ogg`, `.opus`, `.m4a`, `.aac`, `.wma`,
-`.aiff`, `.aif`.
+`.aiff`, `.aif`. For URL files the extension is derived from the URL path,
+`Content-Disposition`, or `Content-Type`.
 
-Each file is limited by `limits.max_upload_mb`; the combined upload is limited by
+Each file is limited by `limits.max_upload_mb`; the combined files are limited by
 `limits.max_total_upload_mb`. Files are stored in the job workspace and renamed to
-`<file_id>.<ext>` before being passed to Olaf.
+`<file_id>.<ext>` before being passed to Olaf. URL downloads follow at most five redirects.
+Unless `limits.allow_private_urls` is enabled, destinations resolving to private, loopback,
+or link-local addresses are rejected.
 
 ### Scope
 

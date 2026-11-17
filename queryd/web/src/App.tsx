@@ -29,7 +29,8 @@ const JOB_STATUSES = [
 ];
 
 const ENDPOINTS = [
-  ["POST", "/api/jobs", "Create a multipart query job with files, scope, callback_url"],
+  ["POST", "/api/jobs", "Create a query job from an array of file URLs"],
+  ["POST", "/api/jobs/upload", "Create a multipart query job with files, scope, callback_url"],
   ["GET", "/api/jobs", "List jobs and status counts"],
   ["GET", "/api/jobs/{id}", "Job detail with files and indexes"],
   ["GET", "/api/jobs/{id}/matches", "Mapped archive matches"],
@@ -803,12 +804,13 @@ export function App() {
               <div className="q-table-wrap">
                 <table className="q-table">
                   <thead>
-                    <tr><th>File</th><th>Size</th><th>Type</th></tr>
+                    <tr><th>File</th><th>Source</th><th>Size</th><th>Type</th></tr>
                   </thead>
                   <tbody>
                     {(detail ? detail.files : []).map((file) => (
                       <tr key={file.id}>
                         <td>{file.original_name}</td>
+                        <td>{file.source_url ? <a href={file.source_url} target="_blank" rel="noreferrer">{file.source_url}</a> : "upload"}</td>
                         <td>{formatBytes(file.size_bytes)}</td>
                         <td>{file.content_type || "-"}</td>
                       </tr>

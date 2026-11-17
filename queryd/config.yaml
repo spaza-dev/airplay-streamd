@@ -14,6 +14,7 @@ limits:
   max_indexes_per_job: 500
   max_download_gb: 50
   min_free_disk_gb: 10
+  allow_private_urls: false
 
 workers:
   max_active_jobs: 1
