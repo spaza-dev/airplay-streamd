@@ -50,16 +50,23 @@ type StreamView struct {
 }
 
 type PublicStreamView struct {
-	ID           string       `json:"id"`
-	Name         string       `json:"name"`
-	Status       string       `json:"status"`
-	Type         string       `json:"type"`
-	URL          string       `json:"url"`
-	Enabled      bool         `json:"enabled"`
-	LastActivity *time.Time   `json:"last_activity"`
-	Audio        *AudioConfig `json:"audio"`
-	Video        *VideoConfig `json:"video"`
-	Error        string       `json:"error,omitempty"`
+	ID           string         `json:"id"`
+	Source       string         `json:"source"`
+	Name         string         `json:"name"`
+	Status       string         `json:"status"`
+	Type         string         `json:"type"`
+	URL          string         `json:"url"`
+	Enabled      bool           `json:"enabled"`
+	ChunkSeconds int            `json:"chunk_seconds"`
+	Country      string         `json:"country,omitempty"`
+	Audio        *AudioConfig   `json:"audio"`
+	Video        *VideoConfig   `json:"video"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+	Radio        *RadioStation  `json:"radio,omitempty"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+	LastActivity *time.Time     `json:"last_activity"`
+	Error        string         `json:"error,omitempty"`
 }
 
 type PublicStreamsResponse struct {
@@ -562,10 +569,25 @@ func makePublicStreamView(app *App, eff StreamConfig, st WorkerStatus) PublicStr
 		status = "stopped"
 	}
 	return PublicStreamView{
-		ID: eff.ID, Name: eff.Name, Status: status, Type: eff.Type, URL: eff.URL,
-		Enabled: eff.Enabled, LastActivity: st.LastActivity,
-		Audio: eff.Audio, Video: eff.Video, Error: st.Error,
+		ID: eff.ID, Source: eff.Source, Name: eff.Name, Status: status,
+		Type: eff.Type, URL: eff.URL, Enabled: eff.Enabled,
+		ChunkSeconds: eff.ChunkSeconds, Country: streamCountry(eff),
+		Audio: eff.Audio, Video: eff.Video, Metadata: eff.Metadata, Radio: eff.Radio,
+		CreatedAt: eff.CreatedAt, UpdatedAt: eff.UpdatedAt,
+		LastActivity: st.LastActivity, Error: st.Error,
 	}
+}
+
+func streamCountry(eff StreamConfig) string {
+	if eff.Radio != nil {
+		if country := strings.TrimSpace(eff.Radio.Country); country != "" {
+			return country
+		}
+	}
+	if country, ok := eff.Metadata["country"].(string); ok {
+		return strings.TrimSpace(country)
+	}
+	return ""
 }
 
 func uploaderStatus(app *App) UploaderStatus {

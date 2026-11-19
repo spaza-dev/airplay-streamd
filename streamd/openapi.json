@@ -278,11 +278,15 @@
         "type": "object",
         "required": [
           "id",
+          "source",
           "name",
           "status",
           "type",
           "url",
           "enabled",
+          "chunk_seconds",
+          "created_at",
+          "updated_at",
           "last_activity",
           "audio",
           "video"
@@ -291,6 +295,13 @@
           "id": {
             "type": "string",
             "format": "uuid"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "radio-browser",
+              "custom"
+            ]
           },
           "name": {
             "type": "string"
@@ -321,6 +332,30 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "chunk_seconds": {
+            "type": "integer",
+            "description": "Resolved chunk duration, using the global default when unset."
+          },
+          "country": {
+            "type": "string",
+            "description": "Country from the Radio Browser record, falling back to metadata.country."
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Dynamic stream metadata."
+          },
+          "radio": {
+            "$ref": "#/components/schemas/RadioStation"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           },
           "last_activity": {
             "type": "string",

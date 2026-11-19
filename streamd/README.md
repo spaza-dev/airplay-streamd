@@ -753,19 +753,21 @@ Proxies Radio Browser search and station lookup through the daemon. Search param
 GET /api/streams
 ```
 
-Returns overview data for streams with `enabled: true`. The response intentionally omits `chunk_seconds`, metadata, uploader data, and queue state.
+Returns the full stream record for streams with `enabled: true`, including source, resolved audio/video config, `chunk_seconds`, dynamic `metadata`, Radio Browser `radio` data, `country`, timestamps, and runtime status.
 
 ```json
 {
   "streams": [
     {
       "id": "4ec5158e-5204-4fad-a329-da356b4b0a05",
+      "source": "radio-browser",
       "name": "Capital FM Kenya",
       "status": "running",
       "type": "radio",
       "url": "https://example.com/stream",
       "enabled": true,
-      "last_activity": "2026-11-16T10:05:00Z",
+      "chunk_seconds": 3600,
+      "country": "Kenya",
       "audio": {
         "codec": "libopus",
         "container": "ogg",
@@ -779,13 +781,29 @@ Returns overview data for streams with `enabled: true`. The response intentional
         "codec": "libx264",
         "bitrate": "2500k",
         "container": "mp4"
-      }
+      },
+      "metadata": {
+        "country": "Kenya",
+        "source": "radio-browser"
+      },
+      "radio": {
+        "stationuuid": "4ec5158e-5204-4fad-a329-da356b4b0a05",
+        "name": "Capital FM Kenya",
+        "url": "https://example.com/stream",
+        "country": "Kenya",
+        "countrycode": "KE",
+        "codec": "MP3",
+        "bitrate": 128
+      },
+      "created_at": "2026-11-14T09:08:00Z",
+      "updated_at": "2026-11-14T09:08:32Z",
+      "last_activity": "2026-11-16T10:05:00Z"
     }
   ]
 }
 ```
 
-`status` is one of `running`, `stopped`, `error`, or `idle`. An `error` field is included when the stream has an active recording error. `last_activity` is in-memory and resets when the daemon restarts.
+`status` is one of `running`, `stopped`, `error`, or `idle`. An `error` field is included when the stream has an active recording error. `last_activity` is in-memory and resets when the daemon restarts. `country` is taken from the Radio Browser record and falls back to `metadata.country` for custom streams.
 
 Authentication is optional and controlled by `server.admin_token` (`STREAMD_ADMIN_TOKEN`). When configured, send either:
 

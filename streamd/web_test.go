@@ -71,11 +71,16 @@ func serveRequest(t *testing.T, ws *WebServer, path string, headers map[string]s
 func TestPublicStreamsListsOnlyEnabledWithOverview(t *testing.T) {
 	streams := []StreamConfig{
 		{
-			ID: "enabled-a", Name: "Enabled A", Type: "radio",
-			URL: "https://example.com/a", Enabled: true,
+			ID: testID("enabled-a"), Source: "radio-browser", Name: "Enabled A", Type: "radio",
+			URL: "https://example.com/a", Enabled: true, ChunkSeconds: 120,
 			Audio: &AudioConfig{
 				Codec: "libopus", Container: "ogg", Bitrate: "64k",
 				SampleRate: 48000, Channels: 1,
+			},
+			Metadata: map[string]any{"country": "Kenya", "language": "English"},
+			Radio: &RadioStation{
+				StationUUID: testID("enabled-a"), Name: "Enabled A",
+				URL: "https://example.com/a", Country: "Kenya", CountryCode: "KE",
 			},
 		},
 		{ID: "disabled-b", Name: "Disabled B", Type: "tv", URL: "https://example.com/b", Enabled: false},
@@ -130,6 +135,18 @@ func TestPublicStreamsListsOnlyEnabledWithOverview(t *testing.T) {
 	if a.Video == nil || videoEnabled(*a.Video) {
 		t.Fatalf("video default not merged: %+v", a.Video)
 	}
+	if a.Source != "radio-browser" || a.ChunkSeconds != 120 {
+		t.Fatalf("source/chunk = %q/%d", a.Source, a.ChunkSeconds)
+	}
+	if a.Country != "Kenya" || a.Radio == nil || a.Radio.CountryCode != "KE" {
+		t.Fatalf("country/radio = %q/%+v", a.Country, a.Radio)
+	}
+	if a.Metadata["country"] != "Kenya" || a.Metadata["language"] != "English" {
+		t.Fatalf("metadata = %+v", a.Metadata)
+	}
+	if a.CreatedAt.IsZero() || a.UpdatedAt.IsZero() {
+		t.Fatalf("timestamps = created=%v updated=%v", a.CreatedAt, a.UpdatedAt)
+	}
 	if byID[testID("error-c")].Status != "error" || byID[testID("error-c")].Error != "source unavailable" {
 		t.Fatalf("error stream = %+v", byID[testID("error-c")])
 	}
@@ -150,11 +167,28 @@ func TestPublicStreamsListsOnlyEnabledWithOverview(t *testing.T) {
 		t.Fatalf("decode raw response: %v", err)
 	}
 	for _, stream := range raw.Streams {
-		if _, ok := stream["chunk_seconds"]; ok {
-			t.Fatalf("chunk_seconds leaked in response: %+v", stream)
+		if _, ok := stream["chunk_seconds"]; !ok {
+			t.Fatalf("chunk_seconds missing from response: %+v", stream)
+		}
+		if _, ok := stream["created_at"]; !ok {
+			t.Fatalf("created_at missing from response: %+v", stream)
 		}
 		if _, ok := stream["last_activity"]; !ok {
 			t.Fatalf("last_activity missing from response: %+v", stream)
+		}
+	}
+	for _, stream := range raw.Streams {
+		if stream["id"] != testID("enabled-a") {
+			continue
+		}
+		if stream["country"] != "Kenya" {
+			t.Fatalf("country missing from response: %+v", stream)
+		}
+		if _, ok := stream["metadata"]; !ok {
+			t.Fatalf("metadata missing from response: %+v", stream)
+		}
+		if _, ok := stream["radio"]; !ok {
+			t.Fatalf("radio missing from response: %+v", stream)
 		}
 	}
 }
