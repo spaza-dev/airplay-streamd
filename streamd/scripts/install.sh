@@ -17,29 +17,111 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
+if ! command -v apt-get >/dev/null 2>&1 || ! command -v dpkg-query >/dev/null 2>&1; then
+  echo "unsupported distribution: this installer requires apt and dpkg" >&2
+  exit 1
+fi
+
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "systemctl was not found; systemd is required to install streamd" >&2
+  exit 1
+fi
+
 if [ ! -x "$BIN_SRC" ]; then
   echo "streamd binary not found or not executable: $BIN_SRC" >&2
   echo "Build it first with scripts/build.sh, then rerun this installer." >&2
   exit 1
 fi
 
-echo "==> Installing system dependencies"
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -y
-apt-get install -y --no-install-recommends ffmpeg curl ca-certificates
+case "$(uname -m)" in
+  x86_64|amd64)
+    YTDLP_ASSET="yt-dlp_linux"
+    ;;
+  aarch64|arm64)
+    YTDLP_ASSET="yt-dlp_linux_aarch64"
+    ;;
+  *)
+    YTDLP_ASSET="yt-dlp"
+    require_python=1
+    ;;
+esac
 
-if ! command -v yt-dlp >/dev/null 2>&1; then
-  echo "==> Installing yt-dlp"
-  curl -fsSL -o /usr/local/bin/yt-dlp \
-    https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
-  chmod 0755 /usr/local/bin/yt-dlp
-else
-  echo "==> yt-dlp already installed: $(yt-dlp --version)"
+install_packages() {
+  local package
+  local -a missing=()
+  for package in "$@"; do
+    if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -q '^install ok installed$'; then
+      missing+=("$package")
+    fi
+  done
+  if [ "${#missing[@]}" -eq 0 ]; then
+    echo "==> System packages already installed"
+    return
+  fi
+  echo "==> Installing system packages: ${missing[*]}"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y --no-install-recommends "${missing[@]}"
+}
+
+install_ytdlp() {
+  local checksum sums tmpdir
+  if command -v yt-dlp >/dev/null 2>&1; then
+    if ! yt-dlp --version >/dev/null 2>&1; then
+      echo "the installed yt-dlp binary is not usable" >&2
+      exit 1
+    fi
+    echo "==> yt-dlp already installed: $(yt-dlp --version)"
+    return
+  fi
+
+  echo "==> Installing yt-dlp ($YTDLP_ASSET)"
+  sums="$(curl -fsSL --retry 3 \
+    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS")"
+  checksum="$(printf '%s\n' "$sums" | awk -v f="$YTDLP_ASSET" '$2 == f {print $1; exit}')"
+  if [ -z "$checksum" ]; then
+    echo "could not determine the yt-dlp checksum" >&2
+    exit 1
+  fi
+
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' EXIT
+  curl -fsSL --retry 3 \
+    "https://github.com/yt-dlp/yt-dlp/releases/latest/download/${YTDLP_ASSET}" \
+    -o "$tmpdir/yt-dlp"
+  printf '%s  %s\n' "$checksum" "$tmpdir/yt-dlp" | sha256sum -c - >/dev/null
+  install -m 0755 -o root -g root "$tmpdir/yt-dlp" /usr/local/bin/yt-dlp
+  rm -rf "$tmpdir"
+  trap - EXIT
+
+  if ! /usr/local/bin/yt-dlp --version >/dev/null 2>&1; then
+    echo "the downloaded yt-dlp binary is not usable on this host" >&2
+    exit 1
+  fi
+}
+
+PACKAGES=(ffmpeg ca-certificates curl tar tzdata)
+if [ "${require_python:-0}" -eq 1 ] && ! command -v yt-dlp >/dev/null 2>&1; then
+  PACKAGES+=(python3)
 fi
 
-echo "==> Creating service user"
+echo "==> Installing system dependencies"
+install_packages "${PACKAGES[@]}"
+
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+  echo "ffmpeg and ffprobe are required but were not found after installation" >&2
+  exit 1
+fi
+
+install_ytdlp
+
+echo "==> Creating service group and user"
+if ! getent group "$SERVICE_GROUP" >/dev/null 2>&1; then
+  groupadd --system "$SERVICE_GROUP"
+fi
 if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
-  useradd --system --home-dir "$STATE_DIR" --shell /usr/sbin/nologin "$SERVICE_USER"
+  useradd --system --gid "$SERVICE_GROUP" --home-dir "$STATE_DIR" \
+    --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
 
 echo "==> Creating directories"
@@ -152,3 +234,5 @@ else
   journalctl -u streamd -n 60 --no-pager >&2 || true
   exit 1
 fi
+
+echo "==> Dependencies: ffmpeg=$(command -v ffmpeg) yt-dlp=$(command -v yt-dlp)"

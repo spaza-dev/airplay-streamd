@@ -142,9 +142,9 @@ The daemon owns all recording and upload processes. CLI commands only send contr
 
 ### Build
 
-- Go `1.27.4` (the build script bootstraps it to `$HOME/.local/go` if needed).
-- Node.js 24 via `nvm` for the frontend build.
-- npm.
+- Go `1.27.4` or newer. `scripts/build.sh` checks the version in `go.mod`, uses an existing toolchain when possible, and otherwise installs a checksum-verified copy to `$HOME/.local/go`.
+- Node.js 24 via `nvm` for the frontend build. `scripts/build.sh` installs it with `nvm` when available, or downloads a checksum-verified standalone Node.js when needed.
+- `curl`, `tar`, and coreutils for dependency downloads. The build script installs them with `apt-get` when possible.
 
 The service itself runs without CGO (`CGO_ENABLED=0`) because it uses the pure-Go `modernc.org/sqlite` driver.
 
@@ -962,8 +962,8 @@ sudo ./scripts/install.sh
 
 `install.sh` performs these steps:
 
-1. Installs `ffmpeg`, `curl`, and CA certificates with `apt-get`.
-2. Installs `yt-dlp` to `/usr/local/bin/yt-dlp` if missing.
+1. Installs missing system packages (`ffmpeg`, `curl`, CA certificates, `tar`, and `tzdata`) with `apt-get`.
+2. Installs a checksum-verified standalone `yt-dlp` for the host architecture to `/usr/local/bin/yt-dlp` if missing (no Python required on amd64/arm64).
 3. Creates the `streamd` system user and group.
 4. Creates `/opt/streamd`, `/etc/streamd`, `/var/lib/streamd`, and `/var/log/streamd`.
 5. Installs the binary to `/opt/streamd/streamd`.
@@ -1171,9 +1171,11 @@ cd streamd
 
 `build.sh`:
 
-- Uses `GO_BIN` (default `$HOME/.local/go/bin/go`).
-- Downloads Go `1.27.4` to `$HOME/.local/go` if missing.
-- Loads `nvm` and selects Node 24 if available.
+- Checks for Go against the version in `go.mod`, preferring `$HOME/.local/go`, then `go` on `PATH`.
+- Downloads and installs a checksum-verified Go toolchain to `$HOME/.local/go` if no suitable version is found.
+- Loads `nvm` and installs/selects Node 24 when available.
+- Downloads a checksum-verified standalone Node.js if `nvm` and a suitable Node/npm are missing.
+- Installs missing build tools (`curl`, `tar`, coreutils) with `apt-get` when possible.
 - Runs `npm ci` when `web/package-lock.json` exists, otherwise `npm install`.
 - Runs the TypeScript check and Vite production build.
 - Builds the Go binary with `CGO_ENABLED=0`, `-trimpath`, stripped symbols, and an embedded version.
@@ -1181,10 +1183,11 @@ cd streamd
 Useful overrides:
 
 ```bash
-GO_VERSION=1.27.4 GO_BIN=/usr/local/go/bin/go VERSION=1.2.3 ./scripts/build.sh
+GO=/usr/local/go/bin/go GO_VERSION=1.27.4 VERSION=1.2.3 ./scripts/build.sh
+./scripts/build.sh --skip-web
 ```
 
-The binary embeds `web/dist`, so always build the frontend before the Go binary. `scripts/build.sh` does this automatically.
+The binary embeds `web/dist`, so always build the frontend before the Go binary. `scripts/build.sh` does this automatically; `--skip-web` reuses an existing `web/dist`.
 
 ### Frontend development
 
